@@ -15,6 +15,7 @@
 *   **🎲 Integrated Betting**: Advanced escrow-based betting system (Win/Loss) with rank-based wager caps.
 *   **📜 !annuncio System**: Premium point-sink command that broadcasts beautiful, animated messages on-screen.
 *   **🔄 Seasonal Resets**: Monthly resets that clear seasonal points but preserve lifetime stats and "Aura" status.
+*   **🛠️ Robust Accrual**: Verified 1-point-per-minute watch time system using Streamer.bot's native 'Present Viewers' engine for 100% reliability.
 *   **⚡ High Performance**: SQLite database configured with WAL mode to allow simultaneous access by your bot and external tools (like Minecraft plugins).
 
 ---
@@ -42,7 +43,7 @@
 
 1.  **Database**: Run `schema.sql` in a SQLite tool to create your database file.
 2.  **Configuration**: Open `EconomySystem.cs` and set your `DB_PATH`.
-3.  **Streamer.bot**: Create actions and paste the corresponding code regions from `EconomySystem.cs`.
+3.  **Streamer.bot**: Create actions and paste the corresponding code regions from `EconomySystem.cs`. **Ensure "Watch Time" uses the 'Present Viewers' trigger.**
 4.  **OBS**: Add `Overlay.html` as a Browser Source (1920x1080).
 
 For detailed instructions, see the [Implementation Guide](docs/ImplementationGuide.md).
