@@ -1,0 +1,30 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <defs>
+    <linearGradient id="gradRight" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFEB66" />
+      <stop offset="100%" stop-color="#FFD700" />
+    </linearGradient>
+    <linearGradient id="gradLeft" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFD700" />
+      <stop offset="100%" stop-color="#B39700" />
+    </linearGradient>
+    <linearGradient id="gradTop" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#FFEB66" stop-opacity="0.9"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  
+  <g filter="url(#glow)">
+    <path d="M50 90 L15 65 L15 35 L50 55 Z" fill="url(#gradLeft)" />
+    <path d="M50 90 L85 65 L85 35 L50 55 Z" fill="url(#gradRight)" />
+    <path d="M50 15 L85 35 L50 55 L15 35 Z" fill="url(#gradTop)" />
+    <!-- Subtle edge highlights -->
+    <path d="M50 15 L15 35 L50 55 Z" fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-opacity="0.6"/>
+    <path d="M50 15 L85 35 L50 55 Z" fill="none" stroke="#FFFFFF" stroke-width="1" stroke-opacity="0.4"/>
+    <path d="M50 55 L50 90" fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-opacity="0.3"/>
+  </g>
+</svg>

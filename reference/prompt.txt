@@ -1,0 +1,89 @@
+# Role and Objective
+You are an Expert C# Developer, Streamer.bot specialist, Database Architect, and Frontend Web Developer. Your task is to generate the complete codebase for an Advanced "Pure Economy" Gamification System for a Twitch channel. 
+
+The system relies on Streamer.bot (C# inline methods), a shared local SQLite database (optimized for concurrent reads by an offline Minecraft server plugin), and a Vanilla JavaScript/HTML/CSS OBS Browser Source overlay.
+
+**Constraint Checklist & Confidence Score:**
+Provide the solution in as few files as possible: 
+1. One comprehensive C# script containing the necessary classes/methods for Streamer.bot.
+2. One unified HTML file with inline CSS/Vanilla JS for the OBS overlay.
+3. The SQL schema creation script.
+4. A brief implementation guide.
+
+---
+
+# 1. Tech Stack & Architecture Requirements
+*   **Backend / Bot:** Streamer.bot using C# inline methods. Must be lightweight and minimize unnecessary Twitch API calls.
+*   **Database:** SQLite. **Crucial:** Must be configured with `PRAGMA journal_mode=WAL;` to handle concurrency, allowing Streamer.bot to write while the local Minecraft server plugin reads simultaneously without database locking or corruption.
+*   **Frontend / Overlay:** Pure Vanilla HTML/JS/CSS (Strictly NO frameworks like React, Vue, or jQuery).
+
+---
+
+# 2. Economy & Rank Specifications
+
+### Tiers & Thresholds (Seasonal Points)
+*   Wood (0)
+*   Bronze (500)
+*   Silver (1,500)
+*   Gold (3,500)
+*   Platinum (7,000)
+*   Emerald (12,000)
+*   Diamond (20,000)
+*   Master (35,000)
+*   Grandmaster (60,000)
+*   **Eternal:** Exclusive to the Top 3 users in the global points leaderboard who have reached at least 35,000 points. 
+    *   *Update Frequency:* Must be checked/updated via a scheduled routine every 15 minutes. 
+    *   *Tie-breaker Rule:* Tied scores equal shared positions. If 5 people tie for Top 3, all 5 receive the Eternal rank.
+
+### Dynamic Betting Caps (Max Bet per Rank)
+*   Wood: 25 | Bronze: 50 | Silver: 100 | Gold: 200 | Platinum: 400 | Emerald: 800 | Diamond: 1,500 | Master: 3,000 | Grandmaster: 5,000 | Eternal: 10,000
+
+---
+
+# 3. Core Features & Logic
+
+### A. Points & Sinks
+*   **Accumulation:** Users earn 1 point per 1 minute of watch time (Loyalty system).
+*   **Point Sink:** `!annuncio [message]` command. Deducts 150 points from the user and triggers a WebSocket event to display the message as an on-screen overlay.
+
+### B. Betting System & Rank Workflow (Strict Execution)
+*   Bet commands for two outcomes (e.g., Win/Loss).
+*   Manual resolution via broadcaster commands (2.0x payout or total loss).
+*   **Rank Recalculation Workflow:** Rank recalculation MUST be triggered exclusively during the payout phase to ensure data integrity:
+    1. Perform a 'pre-payout' rank snapshot immediately before points are distributed.
+    2. Distribute/deduct points.
+    3. Calculate new ranks.
+    4. Store the difference (delta) in a `rank_change` column in the SQLite DB (applies to both Lifetime and Seasonal tables).
+
+### C. Database Storage & Leaderboards
+The SQLite database must store: User Rankings (Rank ID/Name), Global Lifetime Points, Current Season Points, Win Rate stats, Total points wagered, and Last bet timestamp.
+*   **Win Rate Leaderboard Logic:** Formula is `(Wins / Total Bets) * 100`.
+    *   *Minimum Qualifiers:* At least 10 total bets AND 400 total points wagered.
+    *   *Activity Filter:* Only users who have placed at least one bet in the last 5 days are pulled for this leaderboard.
+*   **Seasonal Resets:** A C# script/method to perform a monthly points reset. **Crucial:** It sets the *Current Season Points* back to zero for everyone, but must NOT delete historical rank, lifetime points, or lifetime stats.
+
+---
+
+# 4. Visual Integration & Chat Overlay
+
+### WebSocket Payload
+For every chat message received, Streamer.bot must push a JSON payload containing:
+*   Message text
+*   Username
+*   Rank ID & Rank Icon path (Seasonal)
+*   Current Point Balance
+*   `lifetimePeakRankColor` (Hex code or CSS class string representing the user's highest lifetime rank).
+
+### UI/UX Rules (The "Legacy Aura")
+*   **Current Season Icon:** The icon displayed next to the name reflects the Current Season Rank (resets monthly). Assume icons are provided locally (e.g., `/icons/wood.png`).
+*   **Legacy Text Shadow:** The username must have a CSS `text-shadow` (glow effect) colored based on the `lifetimePeakRankColor`. Example: A user who once reached Master will always have a purple glow, even if their current season icon is Wood. 
+*   **Format:** `[RankIcon] Username (Points): Message`.
+
+---
+
+# 5. Required Deliverables
+
+1.  **SQLite Schema & Queries:** Provide the `CREATE TABLE` scripts ensuring WAL mode, the `rank_change` columns, and separated Lifetime/Seasonal tables. Include the specific optimized SQL query for the Win Rate Leaderboard handling the 5-day activity filter and minimum thresholds.
+2.  **Streamer.bot C# Code:** Provide the C# code blocks for: Watch Time accumulation, the Betting Workflow (Snapshot -> Payout -> Delta), the Eternal Rank 15m check, the Seasonal Reset logic, and generating/sending the WebSocket Payload.
+3.  **OBS Chat Overlay (Vanilla JS):** A complete HTML file with inline CSS and Vanilla JS to connect to the Streamer.bot WebSocket, parse the payload, apply the Legacy Aura CSS correctly, and render both the chat messages and the `!annuncio` overlay.
+4.  **Implementation Guide:** A brief markdown guide on how to inject this into Streamer.bot and where to adjust point thresholds or command costs in the future.

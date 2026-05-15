@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Streamer.bot Dynamic Economy Overlay</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&display=swap');
+        
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            font-family: 'Inter', sans-serif;
+            color: #fff;
+            background: transparent;
+        }
+
+        /* Legacy Aura & Chat Overlay */
+        #chat-container {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 450px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            max-height: 600px;
+            justify-content: flex-end;
+        }
+
+        .chat-msg {
+            background: rgba(15, 15, 15, 0.85);
+            border-radius: 8px;
+            padding: 10px 14px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            animation: slideIn 0.3s cubic-bezier(0.25, 0.8, 0.25, 1) forwards;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            border-left: 4px solid #555;
+            word-wrap: break-word;
+            backdrop-filter: blur(5px);
+            transition: all 0.3s ease;
+        }
+
+        .chat-msg.fade-out {
+            animation: fadeOut 0.5s forwards;
+        }
+
+        .rank-icon {
+            width: 28px;
+            height: 28px;
+            object-fit: contain;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        .user-info {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+        }
+
+        .user-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        /* The core Legacy Aura implementation via inline dynamic text shadow */
+        .username {
+            letter-spacing: 0.5px;
+        }
+
+        .points {
+            color: #b0b0b0;
+            font-size: 13px;
+            font-weight: 400;
+        }
+
+        .message {
+            margin-top: 4px;
+            font-size: 15px;
+            line-height: 1.4;
+            color: #f1f1f1;
+        }
+
+        /* Annuncio Feature Overlay */
+        #annuncio-container {
+            position: absolute;
+            top: 20%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            z-index: 1000;
+            pointer-events: none;
+        }
+
+        .annuncio-box {
+            background: linear-gradient(135deg, rgba(255, 0, 102, 0.95), rgba(153, 0, 255, 0.95));
+            padding: 35px 50px;
+            border-radius: 16px;
+            box-shadow: 0 0 50px rgba(255, 0, 255, 0.7), inset 0 0 20px rgba(255, 255, 255, 0.3);
+            text-align: center;
+            animation: popIn 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+            border: 2px solid rgba(255, 255, 255, 0.4);
+            backdrop-filter: blur(15px);
+        }
+
+        .annuncio-box.hide {
+            animation: popOut 0.5s forwards;
+        }
+
+        .annuncio-title {
+            font-size: 26px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            margin-bottom: 15px;
+            color: #fff;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+
+        .annuncio-user {
+            color: #ffeb3b;
+            font-weight: 700;
+        }
+
+        .annuncio-text {
+            font-size: 34px;
+            font-weight: 700;
+            color: #fff;
+            text-shadow: 0 4px 15px rgba(0,0,0,0.6);
+            max-width: 800px;
+            word-wrap: break-word;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-30px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        @keyframes fadeOut {
+            to { opacity: 0; transform: translateX(-20px); }
+        }
+
+        @keyframes popIn {
+            0% { opacity: 0; transform: scale(0.5) translateY(50px); }
+            100% { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        
+        @keyframes popOut {
+            0% { opacity: 1; transform: scale(1); }
+            100% { opacity: 0; transform: scale(0.8) translateY(-30px); }
+        }
+    </style>
+</head>
+<body>
+
+    <div id="chat-container"></div>
+    <div id="annuncio-container"></div>
+    <div id="toast-container"></div>
+
+    <script>
+        const ws = new WebSocket("ws://127.0.0.1:8080/");
+
+        ws.onopen = () => {
+            console.log("Connected to Streamer.bot WebSocket!");
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                
+                if (data.event === "chat_message") {
+                    renderChat(data);
+                } else if (data.event === "annuncio") {
+                    renderAnnuncio(data);
+                } else if (data.event === "bet_resolved") {
+                    renderBetResolution(data);
+                } else if (data.event === "season_reset") {
+                    showToast(`🔄 SEASON RESET: ${data.newSeason}`, "#ffeb3b");
+                }
+            } catch (e) {
+                // Ignore unexpected or non-json payloads silently
+            }
+        };
+
+        function showToast(text, color = "#fff", duration = 5000) {
+            const container = document.getElementById('toast-container');
+            const toast = document.createElement('div');
+            toast.className = 'toast';
+            toast.style.borderLeft = `5px solid ${color}`;
+            toast.style.background = 'rgba(20, 20, 20, 0.95)';
+            toast.style.padding = '15px 25px';
+            toast.style.borderRadius = '8px';
+            toast.style.color = '#fff';
+            toast.style.fontSize = '20px';
+            toast.style.fontWeight = '700';
+            toast.style.boxShadow = '0 10px 30px rgba(0,0,0,0.5)';
+            toast.style.marginBottom = '10px';
+            toast.style.animation = 'slideIn 0.4s cubic-bezier(0.25, 0.8, 0.25, 1) forwards';
+            toast.style.backdropFilter = 'blur(10px)';
+            
+            toast.innerText = text;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.animation = 'fadeOut 0.5s forwards';
+                setTimeout(() => toast.remove(), 500);
+            }, duration);
+        }
+
+        function renderBetResolution(data) {
+            // Show a summary toast
+            showToast(`🎲 Bet Resolved: [${data.winLabel}] wins!`, "#4caf50", 8000);
+            
+            // Show individual rank-up toasts for major hype
+            if (data.rankChanges && data.rankChanges.length > 0) {
+                data.rankChanges.forEach((change, index) => {
+                    if (change.promoted) {
+                        setTimeout(() => {
+                            showToast(`⬆️ LEVEL UP: ${change.username} reached ${change.newRankName}!`, "#AA44FF", 6000);
+                        }, 1000 + (index * 800)); // Staggered entry
+                    }
+                });
+            }
+        }
+
+        function renderChat(data) {
+            const container = document.getElementById('chat-container');
+            const el = document.createElement('div');
+            el.className = 'chat-msg';
+            
+            // Match the left border color to the user's legacy aura peak color
+            el.style.borderLeftColor = data.lifetimePeakRankColor;
+
+            // Eternal users get a special glow
+            if (data.rankId === 9) {
+                el.style.boxShadow = `0 0 20px ${data.rankColor}44, inset 0 0 10px ${data.rankColor}22`;
+                el.style.border = `1px solid ${data.rankColor}44`;
+            }
+
+            el.innerHTML = `
+                <img src="${data.rankIcon}" alt="Rank" class="rank-icon" onerror="this.src='data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs='">
+                <div class="user-info">
+                    <div class="user-header">
+                        <span class="username" style="color: ${data.lifetimePeakRankColor}; text-shadow: 0 0 10px ${data.lifetimePeakRankColor}B3, 0 0 20px ${data.lifetimePeakRankColor}66;">${data.username}</span>
+                        <span class="points">(${data.points.toLocaleString()})</span>
+                        <span style="margin-left:2px; color: #fff;">:</span>
+                    </div>
+                    <div class="message">${data.message}</div>
+                </div>
+            `;
+            
+            container.appendChild(el);
+            
+            if (container.children.length > 12) {
+                container.removeChild(container.firstChild);
+            }
+
+            setTimeout(() => {
+                el.classList.add('fade-out');
+                setTimeout(() => {
+                    if(el.parentElement) el.parentElement.removeChild(el);
+                }, 500);
+            }, 20000);
+        }
+
+        function renderAnnuncio(data) {
+            const container = document.getElementById('annuncio-container');
+            const box = document.createElement('div');
+            box.className = 'annuncio-box';
+            
+            box.innerHTML = `
+                <div class="annuncio-title">📢 Annuncio by <span class="annuncio-user">${data.username}</span></div>
+                <div class="annuncio-text">${data.message}</div>
+            `;
+            
+            container.appendChild(box);
+
+            setTimeout(() => {
+                box.classList.add('hide');
+                setTimeout(() => {
+                    if(box.parentElement) box.parentElement.removeChild(box);
+                }, 500);
+            }, 8000);
+        }
+    </script>
+    <style>
+        #toast-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            z-index: 2000;
+        }
+    </style>
+</body>
+</html>
