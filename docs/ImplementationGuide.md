@@ -38,7 +38,7 @@ You need to create "Actions" in Streamer.bot for each feature. For every action,
 
 | Feature | Streamer.bot Trigger | Code to Copy from `EconomySystem.cs` |
 | :--- | :--- | :--- |
-| **Watch Time** | Timer (60s) or "User Present" | `SHARED HELPER` + `ACTION 1` |
+| **Watch Time** | Trigger: **Twitch -> General -> Present Viewers** | `SHARED HELPER` + `ACTION 1` |
 | **Chat Alerts** | Twitch -> Chat Message | `SHARED HELPER` + `ACTION 9` |
 | **!annuncio** | Command: `!annuncio` | `SHARED HELPER` + `ACTION 2` |
 | **Betting** | Commands: `!startbet`, `!bet`, `!lockbet`, `!resolvebet` | `SHARED HELPER` + `ACTIONS 3 to 6` (in separate actions) |
@@ -46,6 +46,14 @@ You need to create "Actions" in Streamer.bot for each feature. For every action,
 | **Monthly Reset** | Manual / Monthly Timer | `SHARED HELPER` + `ACTION 8` |
 | **Check Rank** | Command: `!rank` | `SHARED HELPER` + `ACTION 10` |
 | **Top 5 List** | Command: `!top` | `SHARED HELPER` + `ACTION 11` |
+
+> [!IMPORTANT]
+> **Setting Up the Watch Time Action (Crucial for Points!)**
+> To ensure viewers get points every minute:
+> 1. In Streamer.bot, go to your **Watch Time** action.
+> 2. Right-click in the **Triggers** box.
+> 3. Navigate to **Twitch -> General -> Present Viewers**.
+> 4. Go to **Platforms -> Twitch -> Settings**. Under the "Present Viewers" section, ensure it is enabled and set to update every **1 minute**.
 
 > [!TIP]
 > **Don't forget the WebSocket!** Go to `Servers/Clients` -> `WebSocket Server`. Set Port to `8080`, check `Auto Start`, and click `Start`. This sends the data to your OBS overlay.

@@ -18,7 +18,7 @@
 //  The CPHInline class that Streamer.bot expects is inside each action region.
 //
 //  Recommended Streamer.bot action layout:
-//   ┌─ WATCH TIME          [Trigger: Timer every 60s / "User Present" event]
+//   ┌─ WATCH TIME          [Trigger: Twitch -> General -> Present Viewers]
 //   ├─ CHAT PAYLOAD        [Trigger: Chat Message]
 //   ├─ !annuncio           [Trigger: Command !annuncio, cooldown 30s]
 //   ├─ !startbet           [Trigger: Command !startbet, Broadcaster/Mod only]
@@ -276,11 +276,8 @@ public static class EconomyDb
 // =============================================================================
 // ██  ACTION 1 — WATCH TIME ACCUMULATION
 // =============================================================================
-// Trigger: Streamer.bot "User Present" event (fires every minute per viewer)
-//          OR a 60-second Timer that calls CPH.TwitchGetActiveViewers().
-//
-// If using "User Present": args["userId"] and args["user"] are populated.
-// If using a Timer with viewer loop, see the commented variant below.
+// Trigger: Twitch -> General -> Present Viewers (recommended)
+//          OR Twitch -> General -> Present (single user)
 // =============================================================================
 #region ACTION: Watch Time
 
@@ -292,32 +289,53 @@ public class CPHInline
 
     public bool Execute()
     {
-        // "User Present" event — runs once per viewer per minute
-        string userId   = args.ContainsKey("userId") ? args["userId"].ToString() : "";
-        string username = args.ContainsKey("user")   ? args["user"].ToString()   : "";
-
-        if (string.IsNullOrEmpty(userId)) return false;
-
-        EconomyDb.EnsureUser(userId, username);
-        EconomyDb.AdjustPoints(userId, EconomyConfig.WATCH_TIME_POINTS);
-        EconomyDb.RecalcRank(userId); // Ensure rank updates in real-time
-        return true;
-    }
-
-    // ── ALTERNATIVE: Timer variant (loop all active viewers in one action) ───
-    // Uncomment if you prefer a single timer action instead of User Present.
-    /*
-    public bool Execute()
-    {
-        var viewers = CPH.GetActiveViewers();  // returns List<ViewerUser>
-        foreach (var v in viewers)
+        // 1) Support for "Present Viewers" Trigger (which provides a 'users' list)
+        if (args.ContainsKey("users") && args["users"] != null)
         {
-            EconomyDb.EnsureUser(v.Login, v.UserName); // adjust property names to Streamer.bot version
-            EconomyDb.AdjustPoints(v.Login, EconomyConfig.WATCH_TIME_POINTS);
+            var enumerable = args["users"] as System.Collections.IEnumerable;
+            if (enumerable != null)
+            {
+                foreach (var item in enumerable)
+                {
+                    var userDict = item as Dictionary<string, object>;
+                    if (userDict != null)
+                    {
+                        string uId   = userDict.ContainsKey("id") ? userDict["id"].ToString() : 
+                                       (userDict.ContainsKey("userId") ? userDict["userId"].ToString() : "");
+                                       
+                        string uName = userDict.ContainsKey("display") ? userDict["display"].ToString() : 
+                                       (userDict.ContainsKey("userName") ? userDict["userName"].ToString() : 
+                                       (userDict.ContainsKey("name") ? userDict["name"].ToString() : ""));
+                        
+                        if (!string.IsNullOrEmpty(uId))
+                        {
+                            EconomyDb.EnsureUser(uId, uName);
+                            EconomyDb.AdjustPoints(uId, EconomyConfig.WATCH_TIME_POINTS);
+                            EconomyDb.RecalcRank(uId);
+                        }
+                    }
+                }
+                return true;
+            }
         }
-        return true;
+
+        // 2) Support for single "User Present" event
+        string userId   = args.ContainsKey("userId") ? args["userId"].ToString() : "";
+        string username = args.ContainsKey("user")   ? args["user"].ToString()   : 
+                          (args.ContainsKey("userName") ? args["userName"].ToString() : "");
+
+        if (!string.IsNullOrEmpty(userId))
+        {
+            EconomyDb.EnsureUser(userId, username);
+            EconomyDb.AdjustPoints(userId, EconomyConfig.WATCH_TIME_POINTS);
+            EconomyDb.RecalcRank(userId); // Ensure rank updates in real-time
+            return true;
+        }
+
+        // 3) Fallback warning
+        CPH.LogWarn("[AuraEconomy] Watch Time action ran, but no user data found! Please ensure this is triggered by the 'Twitch -> General -> Present Viewers' trigger (not a Timer).");
+        return false;
     }
-    */
 
     private Dictionary<string, object> args => CPH.GetArgs();
 }
