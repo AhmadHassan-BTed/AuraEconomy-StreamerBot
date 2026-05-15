@@ -87,3 +87,6 @@ Open `EconomySystem.cs` and look at the `EconomyConfig` section at the top. You 
 *   `RANKS`: Point requirements for each rank.
 
 **Enjoy your new economy system!** 🚀
+
+---
+Developed with ❤️ by **Ahmad Hassan (B-Ted)**

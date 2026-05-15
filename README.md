@@ -1,4 +1,5 @@
 # AuraEconomy: Advanced Streamer.bot Gamification System
+*An Open Source Project by **Ahmad Hassan (B-Ted)***
 
 ![Status](https://img.shields.io/badge/Status-Complete-success)
 ![Platform](https://img.shields.io/badge/Platform-Streamer.bot-blue)
@@ -70,4 +71,4 @@ For detailed instructions, see the [Implementation Guide](docs/ImplementationGui
 
 ---
 
-Developed with ❤️ for the streaming community.
+Developed with ❤️ by **Ahmad Hassan (B-Ted)** for the streaming community.
