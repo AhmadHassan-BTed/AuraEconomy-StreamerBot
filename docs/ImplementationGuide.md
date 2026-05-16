@@ -86,6 +86,31 @@ Open `EconomySystem.cs` and look at the `EconomyConfig` section at the top. You 
 *   `WATCH_TIME_POINTS`: Points earned per minute.
 *   `RANKS`: Point requirements for each rank.
 
+---
+
+## 🛠️ Troubleshooting & Debugging
+If points are not being awarded, or if you cannot find your log files:
+
+1.  **Update All Scripts (First Step)**: 
+    *   Because we added advanced diagnostics, you **MUST** re-copy the `SHARED HELPER` and the specific `ACTION` code from the latest `EconomySystem.cs` and paste them into your Streamer.bot C# editors. 
+    *   *If you don't update the code, the log file will never be created.*
+
+2.  **Force a Test Run**:
+    *   In Streamer.bot, go to your **Watch Time** action.
+    *   Double-click the **Execute C# Code** sub-action.
+    *   Click the **Test** button. Even if you are offline, this will trigger the logger.
+
+3.  **Check for Errors**:
+    *   Look at the **Log** tab at the bottom of the main Streamer.bot window.
+    *   If you see a message like `[AuraEconomy] Logger failed: ...`, it will tell you exactly why the file isn't appearing (usually a "Path not found" or "Access Denied" error).
+
+4.  **Send the Files**:
+    *   Navigate to: `C:\StreamerBot\Data\Logs`
+    *   Look for the most recent file starting with `economy_session_...`
+    *   **Send this log file to me.** It contains the exact "brain" trace of the bot and will tell me why points are missing.
+
+---
+
 **Enjoy your new economy system!** 🚀
 
 ---

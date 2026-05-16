@@ -41,11 +41,13 @@ using System.Data;
 using System.Data.SQLite;
 using System.Linq;
 using Newtonsoft.Json;
+using System.IO;
 
 /// <summary>Central configuration. Change values here; they propagate everywhere.</summary>
 public static class EconomyConfig
 {
     // ── Database ──────────────────────────────────────────────────────────────
+    public const string LOG_DIR  = @"C:\StreamerBot\Data\Logs";
     public const string DB_PATH  = @"C:\StreamerBot\Data\economy.db";
     public static string ConnStr => $"Data Source={DB_PATH};Version=3;Pooling=True;Max Pool Size=5;";
 
@@ -86,6 +88,80 @@ public static class EconomyConfig
     public static RankDef GetRank(int rankId) => RANKS[Math.Max(0, Math.Min(9, rankId))];
 }
 
+
+public static class EconomyLogger
+{
+    private static readonly object _lock = new object();
+    private static string _sessionFile;
+    private static string _sessionId;
+
+    public enum LogLevel { TRACE, DEBUG, INFO, WARN, ERROR, FATAL }
+    public static string InitError { get; private set; }
+
+    static EconomyLogger()
+    {
+        try
+        {
+            _sessionId = Guid.NewGuid().ToString("N").Substring(0, 8);
+            
+            // Try to create the directory
+            try {
+                if (!Directory.Exists(EconomyConfig.LOG_DIR))
+                    Directory.CreateDirectory(EconomyConfig.LOG_DIR);
+            } catch (Exception ex) {
+                InitError = $"Failed to create/access LOG_DIR ({EconomyConfig.LOG_DIR}): {ex.Message}";
+                return;
+            }
+            
+            _sessionFile = Path.Combine(EconomyConfig.LOG_DIR, $"economy_session_{DateTime.Now:yyyyMMdd_HHmmss}_{_sessionId}.log");
+
+            // Test write
+            File.WriteAllText(_sessionFile, $"SYSTEM: EconomyLogger started. Session: {_sessionId}\r\n");
+        }
+        catch (Exception ex) 
+        { 
+            InitError = $"General initialization failure: {ex.Message}";
+        }
+    }
+
+    public static void Log(LogLevel level, string component, string message, string stateSnapshot = null, Exception ex = null, string traceId = null)
+    {
+        if (_sessionFile == null) return;
+        try
+        {
+            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+            string tid = string.IsNullOrEmpty(traceId) ? "" : $"[Trace:{traceId}] ";
+            string state = string.IsNullOrEmpty(stateSnapshot) ? "" : $"\n    -> State: {stateSnapshot}";
+            string exception = ex != null ? $"\n    -> Exception: {ex.Message}\n    -> StackTrace: {ex.StackTrace}" : "";
+            
+            string logLine = $"[{timestamp}] [{level}] [{component}] {tid}{message}{state}{exception}";
+            
+            lock (_lock)
+            {
+                File.AppendAllText(_sessionFile, logLine + Environment.NewLine);
+            }
+        }
+        catch { /* Fallback to nothing */ }
+    }
+
+    public static void CheckInit(dynamic cph)
+    {
+        if (!string.IsNullOrEmpty(InitError))
+        {
+            cph.LogWarn($"[AuraEconomy] Logger failed: {InitError}");
+            // We don't null it out here because other actions might need to see it too, 
+            // but we could use a static flag to avoid spamming the console.
+        }
+    }
+
+    public static void Trace(string component, string msg, string traceId=null, string state=null) => Log(LogLevel.TRACE, component, msg, state, null, traceId);
+    public static void Debug(string component, string msg, string traceId=null, string state=null) => Log(LogLevel.DEBUG, component, msg, state, null, traceId);
+    public static void Info(string component, string msg, string traceId=null, string state=null)  => Log(LogLevel.INFO, component, msg, state, null, traceId);
+    public static void Warn(string component, string msg, string traceId=null, string state=null)  => Log(LogLevel.WARN, component, msg, state, null, traceId);
+    public static void Error(string component, string msg, Exception ex=null, string traceId=null, string state=null) => Log(LogLevel.ERROR, component, msg, state, ex, traceId);
+    public static void Fatal(string component, string msg, Exception ex=null, string traceId=null, string state=null) => Log(LogLevel.FATAL, component, msg, state, ex, traceId);
+}
+
 public struct RankDef
 {
     public int    Id, BetCap, MinPoints;
@@ -97,13 +173,22 @@ public struct RankDef
 /// <summary>All database operations. Every method opens/closes its own connection (WAL safe).</summary>
 public static class EconomyDb
 {
-    private static SQLiteConnection Open()
+    private static SQLiteConnection Open(string traceId = null)
     {
-        var conn = new SQLiteConnection(EconomyConfig.ConnStr);
-        conn.Open();
-        using (var p = new SQLiteCommand("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;", conn))
-            p.ExecuteNonQuery();
-        return conn;
+        EconomyLogger.Trace("EconomyDb.Open", "Opening SQLite connection", traceId);
+        try
+        {
+            var conn = new SQLiteConnection(EconomyConfig.ConnStr);
+            conn.Open();
+            using (var p = new SQLiteCommand("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL;", conn))
+                p.ExecuteNonQuery();
+            return conn;
+        }
+        catch (Exception ex)
+        {
+            EconomyLogger.Fatal("EconomyDb.Open", "Failed to open SQLite connection", ex, traceId);
+            throw;
+        }
     }
 
     // ── Season helpers ────────────────────────────────────────────────────────
@@ -118,31 +203,41 @@ public static class EconomyDb
     }
 
     // ── User bootstrap ────────────────────────────────────────────────────────
-    public static void EnsureUser(string userId, string username)
+    public static void EnsureUser(string userId, string username, string traceId = null)
     {
-        int sid = CurrentSeasonId();
-        using (var c = Open())
-        using (var tx = c.BeginTransaction())
+        EconomyLogger.Debug("EconomyDb", $"EnsureUser called", traceId, $"uid={userId}, uname={username}");
+        try
         {
-            using (var q = new SQLiteCommand(@"
-                INSERT INTO users(user_id, username, created_at, updated_at)
-                VALUES(@uid,@name,datetime('now'),datetime('now'))
-                ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, updated_at=datetime('now');", c, tx))
+            int sid = CurrentSeasonId();
+            using (var c = Open(traceId))
+            using (var tx = c.BeginTransaction())
             {
-                q.Parameters.AddWithValue("@uid",  userId);
-                q.Parameters.AddWithValue("@name", username);
-                q.ExecuteNonQuery();
+                using (var q = new SQLiteCommand(@"
+                    INSERT INTO users(user_id, username, created_at, updated_at)
+                    VALUES(@uid,@name,datetime('now'),datetime('now'))
+                    ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, updated_at=datetime('now');", c, tx))
+                {
+                    q.Parameters.AddWithValue("@uid",  userId);
+                    q.Parameters.AddWithValue("@name", username);
+                    q.ExecuteNonQuery();
+                }
+                using (var q = new SQLiteCommand(@"
+                    INSERT INTO seasonal_stats(user_id, season_id, seasonal_points, rank_id, rank_change)
+                    VALUES(@uid,@sid,0,0,0)
+                    ON CONFLICT(user_id, season_id) DO NOTHING;", c, tx))
+                {
+                    q.Parameters.AddWithValue("@uid", userId);
+                    q.Parameters.AddWithValue("@sid", sid);
+                    q.ExecuteNonQuery();
+                }
+                tx.Commit();
+                EconomyLogger.Trace("EconomyDb", $"EnsureUser completed for {userId}", traceId);
             }
-            using (var q = new SQLiteCommand(@"
-                INSERT INTO seasonal_stats(user_id, season_id, seasonal_points, rank_id, rank_change)
-                VALUES(@uid,@sid,0,0,0)
-                ON CONFLICT(user_id, season_id) DO NOTHING;", c, tx))
-            {
-                q.Parameters.AddWithValue("@uid", userId);
-                q.Parameters.AddWithValue("@sid", sid);
-                q.ExecuteNonQuery();
-            }
-            tx.Commit();
+        }
+        catch (Exception ex)
+        {
+            EconomyLogger.Error("EconomyDb", $"Failed to EnsureUser for {userId}", ex, traceId);
+            throw;
         }
     }
 
@@ -175,87 +270,113 @@ public static class EconomyDb
     }
 
     // ── Award/deduct points (pass negative to deduct) ─────────────────────────
-    public static bool AdjustPoints(string userId, int delta)
+    public static bool AdjustPoints(string userId, int delta, string traceId = null)
     {
-        int sid = CurrentSeasonId();
-        using (var c = Open())
-        using (var tx = c.BeginTransaction())
+        EconomyLogger.Debug("EconomyDb", $"AdjustPoints called", traceId, $"uid={userId}, delta={delta}");
+        try
         {
-            // Guard: never go below 0
-            if (delta < 0)
+            int sid = CurrentSeasonId();
+            using (var c = Open(traceId))
+            using (var tx = c.BeginTransaction())
             {
-                using (var chk = new SQLiteCommand("SELECT seasonal_points FROM seasonal_stats WHERE user_id=@uid AND season_id=@sid;", c, tx))
+                if (delta < 0)
                 {
-                    chk.Parameters.AddWithValue("@uid", userId);
-                    chk.Parameters.AddWithValue("@sid", sid);
-                    var cur = chk.ExecuteScalar();
-                    if (cur == null || Convert.ToInt32(cur) + delta < 0) { tx.Rollback(); return false; }
+                    using (var chk = new SQLiteCommand("SELECT seasonal_points FROM seasonal_stats WHERE user_id=@uid AND season_id=@sid;", c, tx))
+                    {
+                        chk.Parameters.AddWithValue("@uid", userId);
+                        chk.Parameters.AddWithValue("@sid", sid);
+                        var cur = chk.ExecuteScalar();
+                        if (cur == null || Convert.ToInt32(cur) + delta < 0) 
+                        { 
+                            tx.Rollback(); 
+                            EconomyLogger.Warn("EconomyDb", $"AdjustPoints failed: insufficient points.", traceId, $"uid={userId}, current={cur}, delta={delta}");
+                            return false; 
+                        }
+                    }
                 }
+                using (var q = new SQLiteCommand(@"
+                    UPDATE seasonal_stats SET seasonal_points = MAX(0, seasonal_points + @d)
+                    WHERE user_id=@uid AND season_id=@sid;", c, tx))
+                {
+                    q.Parameters.AddWithValue("@d",   delta);
+                    q.Parameters.AddWithValue("@uid", userId);
+                    q.Parameters.AddWithValue("@sid", sid);
+                    q.ExecuteNonQuery();
+                }
+                using (var q = new SQLiteCommand(@"
+                    UPDATE users SET lifetime_points=MAX(0, lifetime_points+@d), updated_at=datetime('now')
+                    WHERE user_id=@uid;", c, tx))
+                {
+                    q.Parameters.AddWithValue("@d",   delta);
+                    q.Parameters.AddWithValue("@uid", userId);
+                    q.ExecuteNonQuery();
+                }
+                tx.Commit();
+                EconomyLogger.Info("EconomyDb", $"Adjusted points successfully.", traceId, $"uid={userId}, delta={delta}");
             }
-            using (var q = new SQLiteCommand(@"
-                UPDATE seasonal_stats SET seasonal_points = MAX(0, seasonal_points + @d)
-                WHERE user_id=@uid AND season_id=@sid;", c, tx))
-            {
-                q.Parameters.AddWithValue("@d",   delta);
-                q.Parameters.AddWithValue("@uid", userId);
-                q.Parameters.AddWithValue("@sid", sid);
-                q.ExecuteNonQuery();
-            }
-            using (var q = new SQLiteCommand(@"
-                UPDATE users SET lifetime_points=MAX(0, lifetime_points+@d), updated_at=datetime('now')
-                WHERE user_id=@uid;", c, tx))
-            {
-                q.Parameters.AddWithValue("@d",   delta);
-                q.Parameters.AddWithValue("@uid", userId);
-                q.ExecuteNonQuery();
-            }
-            tx.Commit();
+            return true;
         }
-        return true;
+        catch (Exception ex)
+        {
+            EconomyLogger.Error("EconomyDb", $"Failed to AdjustPoints for {userId}", ex, traceId);
+            return false;
+        }
     }
 
     // ── Rank recalculation (call after point changes) ─────────────────────────
     public struct RankDelta { public int OldRankId, NewRankId, Delta; }
 
-    public static RankDelta RecalcRank(string userId)
+    public static RankDelta RecalcRank(string userId, string traceId = null)
     {
-        int sid = CurrentSeasonId();
-        using (var c = Open())
+        EconomyLogger.Trace("EconomyDb", $"RecalcRank called", traceId, $"uid={userId}");
+        try
         {
-            int pts = 0, oldRank = 0;
-            using (var q = new SQLiteCommand("SELECT seasonal_points, rank_id FROM seasonal_stats WHERE user_id=@uid AND season_id=@sid;", c))
+            int sid = CurrentSeasonId();
+            using (var c = Open(traceId))
             {
-                q.Parameters.AddWithValue("@uid", userId);
-                q.Parameters.AddWithValue("@sid", sid);
-                using (var r = q.ExecuteReader())
-                    if (r.Read()) { pts = r.GetInt32(0); oldRank = r.GetInt32(1); }
-            }
+                int pts = 0, oldRank = 0;
+                using (var q = new SQLiteCommand("SELECT seasonal_points, rank_id FROM seasonal_stats WHERE user_id=@uid AND season_id=@sid;", c))
+                {
+                    q.Parameters.AddWithValue("@uid", userId);
+                    q.Parameters.AddWithValue("@sid", sid);
+                    using (var r = q.ExecuteReader())
+                        if (r.Read()) { pts = r.GetInt32(0); oldRank = r.GetInt32(1); }
+                }
 
-            // Protect Eternal — only the scheduler can assign or remove it
-            int newRank = (oldRank == 9) ? 9 : EconomyConfig.CalcRankId(pts);
-            int delta   = newRank - oldRank;
+                int newRank = (oldRank == 9) ? 9 : EconomyConfig.CalcRankId(pts);
+                int delta   = newRank - oldRank;
 
-            using (var q = new SQLiteCommand(@"
-                UPDATE seasonal_stats SET rank_id=@nr, rank_change=@d
-                WHERE user_id=@uid AND season_id=@sid;", c))
-            {
-                q.Parameters.AddWithValue("@nr",  newRank);
-                q.Parameters.AddWithValue("@d",   delta);
-                q.Parameters.AddWithValue("@uid", userId);
-                q.Parameters.AddWithValue("@sid", sid);
-                q.ExecuteNonQuery();
-            }
-            using (var q = new SQLiteCommand(@"
-                UPDATE users SET lifetime_peak_rank_id=MAX(lifetime_peak_rank_id,@nr), rank_change=@d, updated_at=datetime('now')
-                WHERE user_id=@uid;", c))
-            {
-                q.Parameters.AddWithValue("@nr",  newRank);
-                q.Parameters.AddWithValue("@d",   delta);
-                q.Parameters.AddWithValue("@uid", userId);
-                q.ExecuteNonQuery();
-            }
+                if (delta != 0) {
+                    EconomyLogger.Info("EconomyDb", $"Rank changed for {userId}", traceId, $"oldRank={oldRank}, newRank={newRank}, pts={pts}");
+                }
 
-            return new RankDelta { OldRankId=oldRank, NewRankId=newRank, Delta=delta };
+                using (var q = new SQLiteCommand(@"
+                    UPDATE seasonal_stats SET rank_id=@nr, rank_change=@d
+                    WHERE user_id=@uid AND season_id=@sid;", c))
+                {
+                    q.Parameters.AddWithValue("@nr",  newRank);
+                    q.Parameters.AddWithValue("@d",   delta);
+                    q.Parameters.AddWithValue("@uid", userId);
+                    q.Parameters.AddWithValue("@sid", sid);
+                    q.ExecuteNonQuery();
+                }
+                using (var q = new SQLiteCommand(@"
+                    UPDATE users SET lifetime_peak_rank_id=MAX(lifetime_peak_rank_id,@nr), rank_change=@d, updated_at=datetime('now')
+                    WHERE user_id=@uid;", c))
+                {
+                    q.Parameters.AddWithValue("@nr",  newRank);
+                    q.Parameters.AddWithValue("@d",   delta);
+                    q.Parameters.AddWithValue("@uid", userId);
+                    q.ExecuteNonQuery();
+                }
+
+                return new RankDelta { OldRankId=oldRank, NewRankId=newRank, Delta=delta };
+            }
+        }
+        catch (Exception ex)
+        {
+            EconomyLogger.Error("EconomyDb", $"Failed to RecalcRank for {userId}", ex, traceId);
+            return new RankDelta { OldRankId=0, NewRankId=0, Delta=0 };
         }
     }
 
@@ -289,52 +410,80 @@ public class CPHInline
 
     public bool Execute()
     {
-        // 1) Support for "Present Viewers" Trigger (which provides a 'users' list)
-        if (args.ContainsKey("users") && args["users"] != null)
+        EconomyLogger.CheckInit(CPH);
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("WatchTime", ">>> WATCH TIME ACTION TRIGGERED <<<", traceId);
+        try
         {
-            var enumerable = args["users"] as System.Collections.IEnumerable;
-            if (enumerable != null)
+            if (args.ContainsKey("users") && args["users"] != null)
             {
-                foreach (var item in enumerable)
+                var enumerable = args["users"] as System.Collections.IEnumerable;
+                EconomyLogger.Debug("WatchTime", $"'users' array detected.", traceId, $"Enumerable type: {enumerable?.GetType()}");
+                
+                if (enumerable != null)
                 {
-                    var userDict = item as Dictionary<string, object>;
-                    if (userDict != null)
+                    int processedCount = 0;
+                    foreach (var item in enumerable)
                     {
-                        string uId   = userDict.ContainsKey("id") ? userDict["id"].ToString() : 
-                                       (userDict.ContainsKey("userId") ? userDict["userId"].ToString() : "");
-                                       
-                        string uName = userDict.ContainsKey("display") ? userDict["display"].ToString() : 
-                                       (userDict.ContainsKey("userName") ? userDict["userName"].ToString() : 
-                                       (userDict.ContainsKey("name") ? userDict["name"].ToString() : ""));
-                        
-                        if (!string.IsNullOrEmpty(uId))
+                        try 
                         {
-                            EconomyDb.EnsureUser(uId, uName);
-                            EconomyDb.AdjustPoints(uId, EconomyConfig.WATCH_TIME_POINTS);
-                            EconomyDb.RecalcRank(uId);
+                            var userDict = item as Dictionary<string, object>;
+                            if (userDict == null) { 
+                                EconomyLogger.Warn("WatchTime", "Item in 'users' is not a dictionary.", traceId, $"Item type: {item?.GetType()}"); 
+                                continue; 
+                            }
+                            
+                            string uId   = userDict.ContainsKey("id") ? userDict["id"].ToString() : (userDict.ContainsKey("userId") ? userDict["userId"].ToString() : "");
+                            string uName = userDict.ContainsKey("display") ? userDict["display"].ToString() : (userDict.ContainsKey("userName") ? userDict["userName"].ToString() : (userDict.ContainsKey("name") ? userDict["name"].ToString() : ""));
+                            
+                            if (!string.IsNullOrEmpty(uId))
+                            {
+                                EconomyLogger.Trace("WatchTime", $"Processing viewer: {uName}", traceId, $"uid={uId}");
+                                EconomyDb.EnsureUser(uId, uName, traceId);
+                                bool adjustSuccess = EconomyDb.AdjustPoints(uId, EconomyConfig.WATCH_TIME_POINTS, traceId);
+                                if (adjustSuccess) {
+                                    EconomyDb.RecalcRank(uId, traceId);
+                                    processedCount++;
+                                } else {
+                                    EconomyLogger.Warn("WatchTime", $"Failed to adjust points for {uId}", traceId);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            EconomyLogger.Error("WatchTime", "Exception processing individual viewer.", ex, traceId);
                         }
                     }
+                    EconomyLogger.Info("WatchTime", $"Successfully processed {processedCount} viewers in array.", traceId);
+                    return true;
+                }
+            }
+
+            EconomyLogger.Debug("WatchTime", "'users' array not found, checking single user.", traceId);
+            string userId   = args.ContainsKey("userId") ? args["userId"].ToString() : "";
+            string username = args.ContainsKey("user")   ? args["user"].ToString()   : (args.ContainsKey("userName") ? args["userName"].ToString() : "");
+
+            if (!string.IsNullOrEmpty(userId))
+            {
+                EconomyLogger.Info("WatchTime", $"Processing single viewer: {username}", traceId, $"uid={userId}");
+                EconomyDb.EnsureUser(userId, username, traceId);
+                bool adjustSuccess = EconomyDb.AdjustPoints(userId, EconomyConfig.WATCH_TIME_POINTS, traceId);
+                if (adjustSuccess) {
+                    EconomyDb.RecalcRank(userId, traceId);
+                    EconomyLogger.Info("WatchTime", $"Successfully awarded points to {username}.", traceId);
                 }
                 return true;
             }
+
+            EconomyLogger.Warn("WatchTime", "Action ran but no user data found. Args: " + string.Join(", ", args.Keys), traceId);
+            CPH.LogWarn("[AuraEconomy] Watch Time action ran, but no user data found! Please ensure this is triggered by the 'Twitch -> General -> Present Viewers' trigger (not a Timer).");
+            return false;
         }
-
-        // 2) Support for single "User Present" event
-        string userId   = args.ContainsKey("userId") ? args["userId"].ToString() : "";
-        string username = args.ContainsKey("user")   ? args["user"].ToString()   : 
-                          (args.ContainsKey("userName") ? args["userName"].ToString() : "");
-
-        if (!string.IsNullOrEmpty(userId))
+        catch (Exception ex)
         {
-            EconomyDb.EnsureUser(userId, username);
-            EconomyDb.AdjustPoints(userId, EconomyConfig.WATCH_TIME_POINTS);
-            EconomyDb.RecalcRank(userId); // Ensure rank updates in real-time
-            return true;
+            EconomyLogger.Fatal("WatchTime", "Fatal error executing Watch Time action.", ex, traceId);
+            return false;
         }
-
-        // 3) Fallback warning
-        CPH.LogWarn("[AuraEconomy] Watch Time action ran, but no user data found! Please ensure this is triggered by the 'Twitch -> General -> Present Viewers' trigger (not a Timer).");
-        return false;
     }
 
     private Dictionary<string, object> args => CPH.GetArgs();
@@ -357,42 +506,57 @@ public class CPHInline
 
     public bool Execute()
     {
-        var    args     = CPH.GetArgs();
-        string userId   = args["userId"].ToString();
-        string username = args["user"].ToString();
-        string input    = args.ContainsKey("rawInput") ? args["rawInput"].ToString().Trim() : "";
-
-        if (string.IsNullOrWhiteSpace(input))
+        EconomyLogger.CheckInit(CPH);
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("!annuncio [message]", ">>> ACTION TRIGGERED <<<", traceId);
+        try
+        {    
+            var    args     = CPH.GetArgs();
+            string userId   = args["userId"].ToString();
+            string username = args["user"].ToString();
+            string input    = args.ContainsKey("rawInput") ? args["rawInput"].ToString().Trim() : "";
+    
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                CPH.SendMessage($"@{username} Usage: !annuncio [your message]");
+                return false;
+            }
+    
+            EconomyDb.EnsureUser(userId, username);
+            var stats = EconomyDb.GetStats(userId);
+    
+            if (stats.SeasonalPoints < EconomyConfig.ANNUNCIO_COST)
+            {
+                CPH.SendMessage($"@{username} You need {EconomyConfig.ANNUNCIO_COST} points but only have {stats.SeasonalPoints}.");
+                return false;
+            }
+    
+            EconomyDb.AdjustPoints(userId, -EconomyConfig.ANNUNCIO_COST);
+            EconomyDb.RecalcRank(userId);
+    
+            var payload = JsonConvert.SerializeObject(new
+            {
+                @event   = "annuncio",
+                username,
+                message  = input,
+                rankId   = stats.RankId,
+                rankName = EconomyConfig.GetRank(stats.RankId).Name,
+                rankColor= EconomyConfig.GetRank(stats.RankId).Color,
+            });
+    
+            CPH.WebsocketBroadcastString(payload);
+            CPH.SendMessage($"📢 {username} sent an announcement! (-{EconomyConfig.ANNUNCIO_COST} pts)");
+            return true;
+        }
+        catch (Exception ex)
         {
-            CPH.SendMessage($"@{username} Usage: !annuncio [your message]");
+            EconomyLogger.Fatal("!annuncio [message]", "Action crashed!", ex, traceId);
             return false;
         }
-
-        EconomyDb.EnsureUser(userId, username);
-        var stats = EconomyDb.GetStats(userId);
-
-        if (stats.SeasonalPoints < EconomyConfig.ANNUNCIO_COST)
+        finally
         {
-            CPH.SendMessage($"@{username} You need {EconomyConfig.ANNUNCIO_COST} points but only have {stats.SeasonalPoints}.");
-            return false;
+            EconomyLogger.Trace("!annuncio [message]", "Action execution finished.", traceId);
         }
-
-        EconomyDb.AdjustPoints(userId, -EconomyConfig.ANNUNCIO_COST);
-        EconomyDb.RecalcRank(userId);
-
-        var payload = JsonConvert.SerializeObject(new
-        {
-            @event   = "annuncio",
-            username,
-            message  = input,
-            rankId   = stats.RankId,
-            rankName = EconomyConfig.GetRank(stats.RankId).Name,
-            rankColor= EconomyConfig.GetRank(stats.RankId).Color,
-        });
-
-        CPH.WebsocketBroadcastString(payload);
-        CPH.SendMessage($"📢 {username} sent an announcement! (-{EconomyConfig.ANNUNCIO_COST} pts)");
-        return true;
     }
 }
 #endregion ACTION: !annuncio
@@ -414,49 +578,63 @@ public class CPHInline
 
     public bool Execute()
     {
-        var    args    = CPH.GetArgs();
-        string input   = args.ContainsKey("rawInput") ? args["rawInput"].ToString().Trim() : "";
-        string[] parts = input.Split('|');
-
-        if (parts.Length < 3)
-        {
-            CPH.SendMessage("Usage: !startbet [title] | [outcomeA] | [outcomeB]");
-            return false;
-        }
-
-        string title = parts[0].Trim();
-        string outA  = parts[1].Trim();
-        string outB  = parts[2].Trim();
-
-        // Ensure no bet is already open
-        if (EconomyDb.GetOpenBetId() != -1)
-        {
-            CPH.SendMessage("⚠️ A bet is already open! Use !resolvebet or !lockbet first.");
-            return false;
-        }
-
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            using (var q = new SQLiteCommand(@"
-                INSERT INTO active_bets (title, outcome_a, outcome_b, status, created_at)
-                VALUES (@t, @a, @b, 'open', datetime('now'));", conn))
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("!startbet [title] | [outcomeA] | [outcomeB]", ">>> ACTION TRIGGERED <<<", traceId);
+        try
+        {    
+            var    args    = CPH.GetArgs();
+            string input   = args.ContainsKey("rawInput") ? args["rawInput"].ToString().Trim() : "";
+            string[] parts = input.Split('|');
+    
+            if (parts.Length < 3)
             {
-                q.Parameters.AddWithValue("@t", title);
-                q.Parameters.AddWithValue("@a", outA);
-                q.Parameters.AddWithValue("@b", outB);
-                q.ExecuteNonQuery();
+                CPH.SendMessage("Usage: !startbet [title] | [outcomeA] | [outcomeB]");
+                return false;
             }
+    
+            string title = parts[0].Trim();
+            string outA  = parts[1].Trim();
+            string outB  = parts[2].Trim();
+    
+            // Ensure no bet is already open
+            if (EconomyDb.GetOpenBetId() != -1)
+            {
+                CPH.SendMessage("⚠️ A bet is already open! Use !resolvebet or !lockbet first.");
+                return false;
+            }
+    
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+            {
+                conn.Open();
+                using (var q = new SQLiteCommand(@"
+                    INSERT INTO active_bets (title, outcome_a, outcome_b, status, created_at)
+                    VALUES (@t, @a, @b, 'open', datetime('now'));", conn))
+                {
+                    q.Parameters.AddWithValue("@t", title);
+                    q.Parameters.AddWithValue("@a", outA);
+                    q.Parameters.AddWithValue("@b", outB);
+                    q.ExecuteNonQuery();
+                }
+            }
+    
+            var payload = JsonConvert.SerializeObject(new
+            {
+                @event = "bet_open",
+                title, outcomeA = outA, outcomeB = outB
+            });
+            CPH.WebsocketBroadcastString(payload);
+            CPH.SendMessage($"🎲 Bet OPEN: \"{title}\" — (A) {outA}  vs  (B) {outB} | Use !bet a [amount] or !bet b [amount]");
+            return true;
         }
-
-        var payload = JsonConvert.SerializeObject(new
+        catch (Exception ex)
         {
-            @event = "bet_open",
-            title, outcomeA = outA, outcomeB = outB
-        });
-        CPH.WebsocketBroadcastString(payload);
-        CPH.SendMessage($"🎲 Bet OPEN: \"{title}\" — (A) {outA}  vs  (B) {outB} | Use !bet a [amount] or !bet b [amount]");
-        return true;
+            EconomyLogger.Fatal("!startbet [title] | [outcomeA] | [outcomeB]", "Action crashed!", ex, traceId);
+            return false;
+        }
+        finally
+        {
+            EconomyLogger.Trace("!startbet [title] | [outcomeA] | [outcomeB]", "Action execution finished.", traceId);
+        }
     }
 }
 #endregion ACTION: !startbet
@@ -478,121 +656,135 @@ public class CPHInline
 
     public bool Execute()
     {
-        var    args     = CPH.GetArgs();
-        string userId   = args["userId"].ToString();
-        string username = args["user"].ToString();
-        string input    = args.ContainsKey("rawInput") ? args["rawInput"].ToString().Trim() : "";
-
-        var split = input.Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries);
-        if (split.Length < 2 || !int.TryParse(split[1], out int amount) || amount <= 0)
-        {
-            CPH.SendMessage($"@{username} Usage: !bet [a|b] [amount]");
-            return false;
-        }
-
-        string outcome = split[0].ToLower();
-        if (outcome != "a" && outcome != "b")
-        {
-            CPH.SendMessage($"@{username} Choose 'a' or 'b'.");
-            return false;
-        }
-
-        int betId = EconomyDb.GetOpenBetId();
-        if (betId == -1)
-        {
-            CPH.SendMessage($"@{username} No bet is currently open.");
-            return false;
-        }
-
-        // Check bet is still 'open' (not locked)
-        string betStatus = "";
-        string outALabel = "", outBLabel = "";
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            using (var q = new SQLiteCommand("SELECT status, outcome_a, outcome_b FROM active_bets WHERE bet_id=@bid;", conn))
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("!bet [a|b] [amount]", ">>> ACTION TRIGGERED <<<", traceId);
+        try
+        {    
+            var    args     = CPH.GetArgs();
+            string userId   = args["userId"].ToString();
+            string username = args["user"].ToString();
+            string input    = args.ContainsKey("rawInput") ? args["rawInput"].ToString().Trim() : "";
+    
+            var split = input.Split(new[]{' '}, StringSplitOptions.RemoveEmptyEntries);
+            if (split.Length < 2 || !int.TryParse(split[1], out int amount) || amount <= 0)
             {
-                q.Parameters.AddWithValue("@bid", betId);
-                using (var r = q.ExecuteReader())
-                    if (r.Read()) { betStatus = r.GetString(0); outALabel = r.GetString(1); outBLabel = r.GetString(2); }
+                CPH.SendMessage($"@{username} Usage: !bet [a|b] [amount]");
+                return false;
             }
+    
+            string outcome = split[0].ToLower();
+            if (outcome != "a" && outcome != "b")
+            {
+                CPH.SendMessage($"@{username} Choose 'a' or 'b'.");
+                return false;
+            }
+    
+            int betId = EconomyDb.GetOpenBetId();
+            if (betId == -1)
+            {
+                CPH.SendMessage($"@{username} No bet is currently open.");
+                return false;
+            }
+    
+            // Check bet is still 'open' (not locked)
+            string betStatus = "";
+            string outALabel = "", outBLabel = "";
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+            {
+                conn.Open();
+                using (var q = new SQLiteCommand("SELECT status, outcome_a, outcome_b FROM active_bets WHERE bet_id=@bid;", conn))
+                {
+                    q.Parameters.AddWithValue("@bid", betId);
+                    using (var r = q.ExecuteReader())
+                        if (r.Read()) { betStatus = r.GetString(0); outALabel = r.GetString(1); outBLabel = r.GetString(2); }
+                }
+            }
+    
+            if (betStatus != "open")
+            {
+                CPH.SendMessage($"@{username} Bet is locked. No more entries!");
+                return false;
+            }
+    
+            EconomyDb.EnsureUser(userId, username);
+            var stats = EconomyDb.GetStats(userId);
+            int cap   = EconomyConfig.GetRank(stats.RankId).BetCap;
+    
+            if (amount > cap)
+            {
+                CPH.SendMessage($"@{username} Your {EconomyConfig.GetRank(stats.RankId).Name} rank caps bets at {cap} pts. Use !bet {outcome} {cap}.");
+                return false;
+            }
+    
+            if (stats.SeasonalPoints < amount)
+            {
+                CPH.SendMessage($"@{username} Insufficient points. You have {stats.SeasonalPoints}.");
+                return false;
+            }
+    
+            // Check for duplicate entry
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+            {
+                conn.Open();
+                using (var q = new SQLiteCommand("SELECT COUNT(*) FROM bet_entries WHERE bet_id=@bid AND user_id=@uid;", conn))
+                {
+                    q.Parameters.AddWithValue("@bid", betId);
+                    q.Parameters.AddWithValue("@uid", userId);
+                    long count = (long)q.ExecuteScalar();
+                    if (count > 0) { CPH.SendMessage($"@{username} You already placed a bet!"); return false; }
+                }
+    
+                // Deduct points and record entry
+                if (!EconomyDb.AdjustPoints(userId, -amount)) { CPH.SendMessage($"@{username} Error deducting points."); return false; }
+                EconomyDb.RecalcRank(userId);
+    
+                using (var q = new SQLiteCommand(@"
+                    INSERT INTO bet_entries (bet_id, user_id, username, amount, outcome_chosen, created_at)
+                    VALUES (@bid,@uid,@uname,@amt,@out,datetime('now'));", conn))
+                {
+                    q.Parameters.AddWithValue("@bid",   betId);
+                    q.Parameters.AddWithValue("@uid",   userId);
+                    q.Parameters.AddWithValue("@uname", username);
+                    q.Parameters.AddWithValue("@amt",   amount);
+                    q.Parameters.AddWithValue("@out",   outcome);
+                    q.ExecuteNonQuery();
+                }
+    
+                // Update lifetime wagered and bet count
+                using (var q = new SQLiteCommand(@"
+                    UPDATE users SET lifetime_total_bets=lifetime_total_bets+1,
+                                     lifetime_points_wagered=lifetime_points_wagered+@amt,
+                                     updated_at=datetime('now')
+                    WHERE user_id=@uid;", conn))
+                {
+                    q.Parameters.AddWithValue("@amt", amount);
+                    q.Parameters.AddWithValue("@uid", userId);
+                    q.ExecuteNonQuery();
+                }
+    
+                // Update last_bet_at in seasonal_stats
+                int sid = EconomyDb.CurrentSeasonId();
+                using (var q = new SQLiteCommand("UPDATE seasonal_stats SET last_bet_at=datetime('now') WHERE user_id=@uid AND season_id=@sid;", conn))
+                {
+                    q.Parameters.AddWithValue("@uid", userId);
+                    q.Parameters.AddWithValue("@sid", sid);
+                    q.ExecuteNonQuery();
+                }
+            }
+    
+            string outLabel = (outcome == "a") ? outALabel : outBLabel;
+            CPH.SendMessage($"@{username} ✅ Bet {amount} pts on [{outLabel}]! Good luck!");
+            return true;
         }
-
-        if (betStatus != "open")
+        catch (Exception ex)
         {
-            CPH.SendMessage($"@{username} Bet is locked. No more entries!");
+            EconomyLogger.Fatal("!bet [a|b] [amount]", "Action crashed!", ex, traceId);
             return false;
         }
-
-        EconomyDb.EnsureUser(userId, username);
-        var stats = EconomyDb.GetStats(userId);
-        int cap   = EconomyConfig.GetRank(stats.RankId).BetCap;
-
-        if (amount > cap)
+        finally
         {
-            CPH.SendMessage($"@{username} Your {EconomyConfig.GetRank(stats.RankId).Name} rank caps bets at {cap} pts. Use !bet {outcome} {cap}.");
-            return false;
+            EconomyLogger.Trace("!bet [a|b] [amount]", "Action execution finished.", traceId);
         }
-
-        if (stats.SeasonalPoints < amount)
-        {
-            CPH.SendMessage($"@{username} Insufficient points. You have {stats.SeasonalPoints}.");
-            return false;
-        }
-
-        // Check for duplicate entry
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            using (var q = new SQLiteCommand("SELECT COUNT(*) FROM bet_entries WHERE bet_id=@bid AND user_id=@uid;", conn))
-            {
-                q.Parameters.AddWithValue("@bid", betId);
-                q.Parameters.AddWithValue("@uid", userId);
-                long count = (long)q.ExecuteScalar();
-                if (count > 0) { CPH.SendMessage($"@{username} You already placed a bet!"); return false; }
-            }
-
-            // Deduct points and record entry
-            if (!EconomyDb.AdjustPoints(userId, -amount)) { CPH.SendMessage($"@{username} Error deducting points."); return false; }
-            EconomyDb.RecalcRank(userId);
-
-            using (var q = new SQLiteCommand(@"
-                INSERT INTO bet_entries (bet_id, user_id, username, amount, outcome_chosen, created_at)
-                VALUES (@bid,@uid,@uname,@amt,@out,datetime('now'));", conn))
-            {
-                q.Parameters.AddWithValue("@bid",   betId);
-                q.Parameters.AddWithValue("@uid",   userId);
-                q.Parameters.AddWithValue("@uname", username);
-                q.Parameters.AddWithValue("@amt",   amount);
-                q.Parameters.AddWithValue("@out",   outcome);
-                q.ExecuteNonQuery();
-            }
-
-            // Update lifetime wagered and bet count
-            using (var q = new SQLiteCommand(@"
-                UPDATE users SET lifetime_total_bets=lifetime_total_bets+1,
-                                 lifetime_points_wagered=lifetime_points_wagered+@amt,
-                                 updated_at=datetime('now')
-                WHERE user_id=@uid;", conn))
-            {
-                q.Parameters.AddWithValue("@amt", amount);
-                q.Parameters.AddWithValue("@uid", userId);
-                q.ExecuteNonQuery();
-            }
-
-            // Update last_bet_at in seasonal_stats
-            int sid = EconomyDb.CurrentSeasonId();
-            using (var q = new SQLiteCommand("UPDATE seasonal_stats SET last_bet_at=datetime('now') WHERE user_id=@uid AND season_id=@sid;", conn))
-            {
-                q.Parameters.AddWithValue("@uid", userId);
-                q.Parameters.AddWithValue("@sid", sid);
-                q.ExecuteNonQuery();
-            }
-        }
-
-        string outLabel = (outcome == "a") ? outALabel : outBLabel;
-        CPH.SendMessage($"@{username} ✅ Bet {amount} pts on [{outLabel}]! Good luck!");
-        return true;
     }
 }
 #endregion ACTION: !bet
@@ -613,22 +805,36 @@ public class CPHInline
 
     public bool Execute()
     {
-        int betId = EconomyDb.GetOpenBetId();
-        if (betId == -1) { CPH.SendMessage("No open bet to lock."); return false; }
-
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            using (var q = new SQLiteCommand("UPDATE active_bets SET status='locked', locked_at=datetime('now') WHERE bet_id=@bid;", conn))
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("!lockbet", ">>> ACTION TRIGGERED <<<", traceId);
+        try
+        {    
+            int betId = EconomyDb.GetOpenBetId();
+            if (betId == -1) { CPH.SendMessage("No open bet to lock."); return false; }
+    
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
             {
-                q.Parameters.AddWithValue("@bid", betId);
-                q.ExecuteNonQuery();
+                conn.Open();
+                using (var q = new SQLiteCommand("UPDATE active_bets SET status='locked', locked_at=datetime('now') WHERE bet_id=@bid;", conn))
+                {
+                    q.Parameters.AddWithValue("@bid", betId);
+                    q.ExecuteNonQuery();
+                }
             }
+    
+            CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(new { @event = "bet_locked" }));
+            CPH.SendMessage("🔒 Bet is now LOCKED. No more entries!");
+            return true;
         }
-
-        CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(new { @event = "bet_locked" }));
-        CPH.SendMessage("🔒 Bet is now LOCKED. No more entries!");
-        return true;
+        catch (Exception ex)
+        {
+            EconomyLogger.Fatal("!lockbet", "Action crashed!", ex, traceId);
+            return false;
+        }
+        finally
+        {
+            EconomyLogger.Trace("!lockbet", "Action execution finished.", traceId);
+        }
     }
 }
 #endregion ACTION: !lockbet
@@ -655,132 +861,146 @@ public class CPHInline
 
     public bool Execute()
     {
-        var    args    = CPH.GetArgs();
-        string input   = args.ContainsKey("rawInput") ? args["rawInput"].ToString().Trim().ToLower() : "";
-
-        if (input != "a" && input != "b")
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("!resolvebet [a|b]", ">>> ACTION TRIGGERED <<<", traceId);
+        try
+        {    
+            var    args    = CPH.GetArgs();
+            string input   = args.ContainsKey("rawInput") ? args["rawInput"].ToString().Trim().ToLower() : "";
+    
+            if (input != "a" && input != "b")
+            {
+                CPH.SendMessage("Usage: !resolvebet [a|b]");
+                return false;
+            }
+    
+            int betId = EconomyDb.GetOpenBetId();
+            if (betId == -1) { CPH.SendMessage("No active bet to resolve."); return false; }
+    
+            string betTitle = "", outA = "", outB = "";
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+            {
+                conn.Open();
+                using (var q = new SQLiteCommand("SELECT title, outcome_a, outcome_b FROM active_bets WHERE bet_id=@bid;", conn))
+                {
+                    q.Parameters.AddWithValue("@bid", betId);
+                    using (var r = q.ExecuteReader())
+                        if (r.Read()) { betTitle = r.GetString(0); outA = r.GetString(1); outB = r.GetString(2); }
+                }
+            }
+    
+            // ── STEP 1: Pre-payout rank snapshot ─────────────────────────────────
+            var participants = new List<(string uid, string uname, int amount, string chosen)>();
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+            {
+                conn.Open();
+                using (var q = new SQLiteCommand("SELECT user_id, username, amount, outcome_chosen FROM bet_entries WHERE bet_id=@bid;", conn))
+                {
+                    q.Parameters.AddWithValue("@bid", betId);
+                    using (var r = q.ExecuteReader())
+                        while (r.Read())
+                            participants.Add((r.GetString(0), r.GetString(1), r.GetInt32(2), r.GetString(3)));
+                }
+            }
+    
+            // Snapshot pre-payout ranks
+            var preRanks = new Dictionary<string, int>();
+            foreach (var p in participants)
+            {
+                var s = EconomyDb.GetStats(p.uid);
+                preRanks[p.uid] = s.RankId;
+            }
+    
+            // ── STEP 2: Distribute payouts ────────────────────────────────────────
+            int winners = 0, losers = 0;
+            foreach (var p in participants)
+            {
+                bool won = (p.chosen == input);
+                if (won)
+                {
+                    // Return original bet + winnings (total = 2x)
+                    EconomyDb.AdjustPoints(p.uid, (int)(p.amount * EconomyConfig.BET_WIN_MULTIPLIER));
+                    using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+                    {
+                        conn.Open();
+                        using (var q = new SQLiteCommand("UPDATE users SET lifetime_wins=lifetime_wins+1, updated_at=datetime('now') WHERE user_id=@uid;", conn))
+                        {
+                            q.Parameters.AddWithValue("@uid", p.uid);
+                            q.ExecuteNonQuery();
+                        }
+                    }
+                    winners++;
+                }
+                else
+                {
+                    // Losses: points already deducted; just tally
+                    using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+                    {
+                        conn.Open();
+                        using (var q = new SQLiteCommand("UPDATE users SET lifetime_losses=lifetime_losses+1, updated_at=datetime('now') WHERE user_id=@uid;", conn))
+                        {
+                            q.Parameters.AddWithValue("@uid", p.uid);
+                            q.ExecuteNonQuery();
+                        }
+                    }
+                    losers++;
+                }
+            }
+    
+            // ── STEP 3 & 4: Recalculate ranks and persist deltas ──────────────────
+            var rankChanges = new List<object>();
+            foreach (var p in participants)
+            {
+                var delta = EconomyDb.RecalcRank(p.uid);
+                if (delta.Delta != 0)
+                {
+                    rankChanges.Add(new
+                    {
+                        username    = p.uname,
+                        oldRankName = EconomyConfig.GetRank(delta.OldRankId).Name,
+                        newRankName = EconomyConfig.GetRank(delta.NewRankId).Name,
+                        delta       = delta.Delta,
+                        promoted    = delta.Delta > 0
+                    });
+                }
+            }
+    
+            // Mark bet resolved
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+            {
+                conn.Open();
+                using (var q = new SQLiteCommand(@"
+                    UPDATE active_bets SET status='resolved', winning_outcome=@wo, resolved_at=datetime('now')
+                    WHERE bet_id=@bid;", conn))
+                {
+                    q.Parameters.AddWithValue("@wo",  input);
+                    q.Parameters.AddWithValue("@bid", betId);
+                    q.ExecuteNonQuery();
+                }
+            }
+    
+            string winLabel = (input == "a") ? outA : outB;
+            CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(new
+            {
+                @event      = "bet_resolved",
+                betTitle,
+                winLabel,
+                winners, losers,
+                rankChanges
+            }));
+    
+            CPH.SendMessage($"✅ Bet resolved! [{winLabel}] wins! 🏆 {winners} winners, {losers} losers. Rank-ups: {rankChanges.Count}");
+            return true;
+        }
+        catch (Exception ex)
         {
-            CPH.SendMessage("Usage: !resolvebet [a|b]");
+            EconomyLogger.Fatal("!resolvebet [a|b]", "Action crashed!", ex, traceId);
             return false;
         }
-
-        int betId = EconomyDb.GetOpenBetId();
-        if (betId == -1) { CPH.SendMessage("No active bet to resolve."); return false; }
-
-        string betTitle = "", outA = "", outB = "";
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+        finally
         {
-            conn.Open();
-            using (var q = new SQLiteCommand("SELECT title, outcome_a, outcome_b FROM active_bets WHERE bet_id=@bid;", conn))
-            {
-                q.Parameters.AddWithValue("@bid", betId);
-                using (var r = q.ExecuteReader())
-                    if (r.Read()) { betTitle = r.GetString(0); outA = r.GetString(1); outB = r.GetString(2); }
-            }
+            EconomyLogger.Trace("!resolvebet [a|b]", "Action execution finished.", traceId);
         }
-
-        // ── STEP 1: Pre-payout rank snapshot ─────────────────────────────────
-        var participants = new List<(string uid, string uname, int amount, string chosen)>();
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            using (var q = new SQLiteCommand("SELECT user_id, username, amount, outcome_chosen FROM bet_entries WHERE bet_id=@bid;", conn))
-            {
-                q.Parameters.AddWithValue("@bid", betId);
-                using (var r = q.ExecuteReader())
-                    while (r.Read())
-                        participants.Add((r.GetString(0), r.GetString(1), r.GetInt32(2), r.GetString(3)));
-            }
-        }
-
-        // Snapshot pre-payout ranks
-        var preRanks = new Dictionary<string, int>();
-        foreach (var p in participants)
-        {
-            var s = EconomyDb.GetStats(p.uid);
-            preRanks[p.uid] = s.RankId;
-        }
-
-        // ── STEP 2: Distribute payouts ────────────────────────────────────────
-        int winners = 0, losers = 0;
-        foreach (var p in participants)
-        {
-            bool won = (p.chosen == input);
-            if (won)
-            {
-                // Return original bet + winnings (total = 2x)
-                EconomyDb.AdjustPoints(p.uid, (int)(p.amount * EconomyConfig.BET_WIN_MULTIPLIER));
-                using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-                {
-                    conn.Open();
-                    using (var q = new SQLiteCommand("UPDATE users SET lifetime_wins=lifetime_wins+1, updated_at=datetime('now') WHERE user_id=@uid;", conn))
-                    {
-                        q.Parameters.AddWithValue("@uid", p.uid);
-                        q.ExecuteNonQuery();
-                    }
-                }
-                winners++;
-            }
-            else
-            {
-                // Losses: points already deducted; just tally
-                using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-                {
-                    conn.Open();
-                    using (var q = new SQLiteCommand("UPDATE users SET lifetime_losses=lifetime_losses+1, updated_at=datetime('now') WHERE user_id=@uid;", conn))
-                    {
-                        q.Parameters.AddWithValue("@uid", p.uid);
-                        q.ExecuteNonQuery();
-                    }
-                }
-                losers++;
-            }
-        }
-
-        // ── STEP 3 & 4: Recalculate ranks and persist deltas ──────────────────
-        var rankChanges = new List<object>();
-        foreach (var p in participants)
-        {
-            var delta = EconomyDb.RecalcRank(p.uid);
-            if (delta.Delta != 0)
-            {
-                rankChanges.Add(new
-                {
-                    username    = p.uname,
-                    oldRankName = EconomyConfig.GetRank(delta.OldRankId).Name,
-                    newRankName = EconomyConfig.GetRank(delta.NewRankId).Name,
-                    delta       = delta.Delta,
-                    promoted    = delta.Delta > 0
-                });
-            }
-        }
-
-        // Mark bet resolved
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            using (var q = new SQLiteCommand(@"
-                UPDATE active_bets SET status='resolved', winning_outcome=@wo, resolved_at=datetime('now')
-                WHERE bet_id=@bid;", conn))
-            {
-                q.Parameters.AddWithValue("@wo",  input);
-                q.Parameters.AddWithValue("@bid", betId);
-                q.ExecuteNonQuery();
-            }
-        }
-
-        string winLabel = (input == "a") ? outA : outB;
-        CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(new
-        {
-            @event      = "bet_resolved",
-            betTitle,
-            winLabel,
-            winners, losers,
-            rankChanges
-        }));
-
-        CPH.SendMessage($"✅ Bet resolved! [{winLabel}] wins! 🏆 {winners} winners, {losers} losers. Rank-ups: {rankChanges.Count}");
-        return true;
     }
 }
 #endregion ACTION: !resolvebet
@@ -807,106 +1027,120 @@ public class CPHInline
 
     public bool Execute()
     {
-        int sid = EconomyDb.CurrentSeasonId();
-
-        // Fetch all users >= ETERNAL_MIN_POINTS, ordered by seasonal_points DESC
-        var candidates = new List<(string uid, string uname, int pts)>();
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            using (var q = new SQLiteCommand(@"
-                SELECT user_id, username, seasonal_points
-                FROM v_season_leaderboard
-                WHERE seasonal_points >= @min
-                ORDER BY seasonal_points DESC;", conn))
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("ETERNAL RANK SCHEDULER (every 15 minutes)", ">>> ACTION TRIGGERED <<<", traceId);
+        try
+        {    
+            int sid = EconomyDb.CurrentSeasonId();
+    
+            // Fetch all users >= ETERNAL_MIN_POINTS, ordered by seasonal_points DESC
+            var candidates = new List<(string uid, string uname, int pts)>();
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
             {
-                q.Parameters.AddWithValue("@min", EconomyConfig.ETERNAL_MIN_POINTS);
-                using (var r = q.ExecuteReader())
-                    while (r.Read())
-                        candidates.Add((r.GetString(0), r.GetString(1), r.GetInt32(2)));
-            }
-        }
-
-        // Determine which positions count as "Top 3" with tie-breaking
-        // RANK() semantics: ties share a position; position 3 may have more than 3 users.
-        var eternalIds = new HashSet<string>();
-        if (candidates.Count > 0)
-        {
-            int position = 1;
-            int prevPts  = candidates[0].pts;
-            int sameCount = 0;
-
-            for (int i = 0; i < candidates.Count; i++)
-            {
-                int pts = candidates[i].pts;
-                if (pts < prevPts)
+                conn.Open();
+                using (var q = new SQLiteCommand(@"
+                    SELECT user_id, username, seasonal_points
+                    FROM v_season_leaderboard
+                    WHERE seasonal_points >= @min
+                    ORDER BY seasonal_points DESC;", conn))
                 {
-                    position += sameCount;
-                    sameCount  = 0;
-                    prevPts    = pts;
-                }
-                sameCount++;
-
-                if (position <= EconomyConfig.ETERNAL_TOP_SLOTS)
-                    eternalIds.Add(candidates[i].uid);
-                else if (position > EconomyConfig.ETERNAL_TOP_SLOTS)
-                    break; // no further ties can qualify
-            }
-        }
-
-        // Apply / revoke Eternal
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            // Get all users currently in this season
-            var allUsers = new List<(string uid, int pts, int rankId)>();
-            using (var q = new SQLiteCommand("SELECT user_id, seasonal_points, rank_id FROM seasonal_stats WHERE season_id=@sid;", conn))
-            {
-                q.Parameters.AddWithValue("@sid", sid);
-                using (var r = q.ExecuteReader())
-                    while (r.Read())
-                        allUsers.Add((r.GetString(0), r.GetInt32(1), r.GetInt32(2)));
-            }
-
-            foreach (var (uid, pts, rankId) in allUsers)
-            {
-                bool shouldBeEternal = eternalIds.Contains(uid);
-                bool isEternal       = (rankId == 9);
-
-                if (shouldBeEternal && !isEternal)
-                {
-                    // Promote to Eternal
-                    using (var q = new SQLiteCommand("UPDATE seasonal_stats SET rank_id=9, rank_change=1 WHERE user_id=@uid AND season_id=@sid;", conn))
-                    {
-                        q.Parameters.AddWithValue("@uid", uid);
-                        q.Parameters.AddWithValue("@sid", sid);
-                        q.ExecuteNonQuery();
-                    }
-                    using (var q = new SQLiteCommand("UPDATE users SET lifetime_peak_rank_id=MAX(lifetime_peak_rank_id,9), updated_at=datetime('now') WHERE user_id=@uid;", conn))
-                    {
-                        q.Parameters.AddWithValue("@uid", uid);
-                        q.ExecuteNonQuery();
-                    }
-                    CPH.LogInfo($"[Economy] {uid} promoted to Eternal!");
-                }
-                else if (!shouldBeEternal && isEternal)
-                {
-                    // Demote to appropriate threshold rank
-                    int correctRank = EconomyConfig.CalcRankId(pts);
-                    using (var q = new SQLiteCommand("UPDATE seasonal_stats SET rank_id=@nr, rank_change=-1 WHERE user_id=@uid AND season_id=@sid;", conn))
-                    {
-                        q.Parameters.AddWithValue("@nr",  correctRank);
-                        q.Parameters.AddWithValue("@uid", uid);
-                        q.Parameters.AddWithValue("@sid", sid);
-                        q.ExecuteNonQuery();
-                    }
-                    CPH.LogInfo($"[Economy] {uid} demoted from Eternal to rank {correctRank}.");
+                    q.Parameters.AddWithValue("@min", EconomyConfig.ETERNAL_MIN_POINTS);
+                    using (var r = q.ExecuteReader())
+                        while (r.Read())
+                            candidates.Add((r.GetString(0), r.GetString(1), r.GetInt32(2)));
                 }
             }
+    
+            // Determine which positions count as "Top 3" with tie-breaking
+            // RANK() semantics: ties share a position; position 3 may have more than 3 users.
+            var eternalIds = new HashSet<string>();
+            if (candidates.Count > 0)
+            {
+                int position = 1;
+                int prevPts  = candidates[0].pts;
+                int sameCount = 0;
+    
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    int pts = candidates[i].pts;
+                    if (pts < prevPts)
+                    {
+                        position += sameCount;
+                        sameCount  = 0;
+                        prevPts    = pts;
+                    }
+                    sameCount++;
+    
+                    if (position <= EconomyConfig.ETERNAL_TOP_SLOTS)
+                        eternalIds.Add(candidates[i].uid);
+                    else if (position > EconomyConfig.ETERNAL_TOP_SLOTS)
+                        break; // no further ties can qualify
+                }
+            }
+    
+            // Apply / revoke Eternal
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
+            {
+                conn.Open();
+                // Get all users currently in this season
+                var allUsers = new List<(string uid, int pts, int rankId)>();
+                using (var q = new SQLiteCommand("SELECT user_id, seasonal_points, rank_id FROM seasonal_stats WHERE season_id=@sid;", conn))
+                {
+                    q.Parameters.AddWithValue("@sid", sid);
+                    using (var r = q.ExecuteReader())
+                        while (r.Read())
+                            allUsers.Add((r.GetString(0), r.GetInt32(1), r.GetInt32(2)));
+                }
+    
+                foreach (var (uid, pts, rankId) in allUsers)
+                {
+                    bool shouldBeEternal = eternalIds.Contains(uid);
+                    bool isEternal       = (rankId == 9);
+    
+                    if (shouldBeEternal && !isEternal)
+                    {
+                        // Promote to Eternal
+                        using (var q = new SQLiteCommand("UPDATE seasonal_stats SET rank_id=9, rank_change=1 WHERE user_id=@uid AND season_id=@sid;", conn))
+                        {
+                            q.Parameters.AddWithValue("@uid", uid);
+                            q.Parameters.AddWithValue("@sid", sid);
+                            q.ExecuteNonQuery();
+                        }
+                        using (var q = new SQLiteCommand("UPDATE users SET lifetime_peak_rank_id=MAX(lifetime_peak_rank_id,9), updated_at=datetime('now') WHERE user_id=@uid;", conn))
+                        {
+                            q.Parameters.AddWithValue("@uid", uid);
+                            q.ExecuteNonQuery();
+                        }
+                        CPH.LogInfo($"[Economy] {uid} promoted to Eternal!");
+                    }
+                    else if (!shouldBeEternal && isEternal)
+                    {
+                        // Demote to appropriate threshold rank
+                        int correctRank = EconomyConfig.CalcRankId(pts);
+                        using (var q = new SQLiteCommand("UPDATE seasonal_stats SET rank_id=@nr, rank_change=-1 WHERE user_id=@uid AND season_id=@sid;", conn))
+                        {
+                            q.Parameters.AddWithValue("@nr",  correctRank);
+                            q.Parameters.AddWithValue("@uid", uid);
+                            q.Parameters.AddWithValue("@sid", sid);
+                            q.ExecuteNonQuery();
+                        }
+                        CPH.LogInfo($"[Economy] {uid} demoted from Eternal to rank {correctRank}.");
+                    }
+                }
+            }
+    
+            CPH.LogInfo($"[Economy] Eternal rank check complete. {eternalIds.Count} Eternal user(s).");
+            return true;
         }
-
-        CPH.LogInfo($"[Economy] Eternal rank check complete. {eternalIds.Count} Eternal user(s).");
-        return true;
+        catch (Exception ex)
+        {
+            EconomyLogger.Fatal("ETERNAL RANK SCHEDULER (every 15 minutes)", "Action crashed!", ex, traceId);
+            return false;
+        }
+        finally
+        {
+            EconomyLogger.Trace("ETERNAL RANK SCHEDULER (every 15 minutes)", "Action execution finished.", traceId);
+        }
     }
 }
 #endregion ACTION: Eternal Rank Scheduler
@@ -931,46 +1165,60 @@ public class CPHInline
 
     public bool Execute()
     {
-        int oldSeasonId = EconomyDb.CurrentSeasonId();
-        string newSeasonName = $"Season {oldSeasonId + 1}";
-
-        using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
-        {
-            conn.Open();
-            using (var tx = conn.BeginTransaction())
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("SEASONAL RESET (run at start of each new month)", ">>> ACTION TRIGGERED <<<", traceId);
+        try
+        {    
+            int oldSeasonId = EconomyDb.CurrentSeasonId();
+            string newSeasonName = $"Season {oldSeasonId + 1}";
+    
+            using (var conn = new SQLiteConnection(EconomyConfig.ConnStr))
             {
-                // Close old season
-                using (var q = new SQLiteCommand("UPDATE seasons SET end_date=date('now') WHERE id=@sid;", conn, tx))
+                conn.Open();
+                using (var tx = conn.BeginTransaction())
                 {
-                    q.Parameters.AddWithValue("@sid", oldSeasonId);
-                    q.ExecuteNonQuery();
+                    // Close old season
+                    using (var q = new SQLiteCommand("UPDATE seasons SET end_date=date('now') WHERE id=@sid;", conn, tx))
+                    {
+                        q.Parameters.AddWithValue("@sid", oldSeasonId);
+                        q.ExecuteNonQuery();
+                    }
+                    // Create new season
+                    using (var q = new SQLiteCommand("INSERT INTO seasons(name, start_date) VALUES(@n, date('now'));", conn, tx))
+                    {
+                        q.Parameters.AddWithValue("@n", newSeasonName);
+                        q.ExecuteNonQuery();
+                    }
+                    int newSeasonId = (int)(long)new SQLiteCommand("SELECT last_insert_rowid();", conn, tx).ExecuteScalar();
+    
+                    // Migrate all users to new season with zeroed stats
+                    using (var q = new SQLiteCommand(@"
+                        INSERT INTO seasonal_stats (user_id, season_id, seasonal_points, rank_id, rank_change)
+                        SELECT user_id, @nsid, 0, 0, 0
+                        FROM users;", conn, tx))
+                    {
+                        q.Parameters.AddWithValue("@nsid", newSeasonId);
+                        q.ExecuteNonQuery();
+                    }
+    
+                    tx.Commit();
                 }
-                // Create new season
-                using (var q = new SQLiteCommand("INSERT INTO seasons(name, start_date) VALUES(@n, date('now'));", conn, tx))
-                {
-                    q.Parameters.AddWithValue("@n", newSeasonName);
-                    q.ExecuteNonQuery();
-                }
-                int newSeasonId = (int)(long)new SQLiteCommand("SELECT last_insert_rowid();", conn, tx).ExecuteScalar();
-
-                // Migrate all users to new season with zeroed stats
-                using (var q = new SQLiteCommand(@"
-                    INSERT INTO seasonal_stats (user_id, season_id, seasonal_points, rank_id, rank_change)
-                    SELECT user_id, @nsid, 0, 0, 0
-                    FROM users;", conn, tx))
-                {
-                    q.Parameters.AddWithValue("@nsid", newSeasonId);
-                    q.ExecuteNonQuery();
-                }
-
-                tx.Commit();
             }
+    
+            CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(new { @event = "season_reset", newSeason = newSeasonName }));
+            CPH.SendMessage($"🔄 Season reset complete! Welcome to {newSeasonName}. All seasonal points zeroed. Grind starts NOW!");
+            CPH.LogInfo($"[Economy] Seasonal reset: old={oldSeasonId}, new={newSeasonName}");
+            return true;
         }
-
-        CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(new { @event = "season_reset", newSeason = newSeasonName }));
-        CPH.SendMessage($"🔄 Season reset complete! Welcome to {newSeasonName}. All seasonal points zeroed. Grind starts NOW!");
-        CPH.LogInfo($"[Economy] Seasonal reset: old={oldSeasonId}, new={newSeasonName}");
-        return true;
+        catch (Exception ex)
+        {
+            EconomyLogger.Fatal("SEASONAL RESET (run at start of each new month)", "Action crashed!", ex, traceId);
+            return false;
+        }
+        finally
+        {
+            EconomyLogger.Trace("SEASONAL RESET (run at start of each new month)", "Action execution finished.", traceId);
+        }
     }
 }
 #endregion ACTION: Seasonal Reset
@@ -993,40 +1241,54 @@ public class CPHInline
 
     public bool Execute()
     {
-        var    args     = CPH.GetArgs();
-        string userId   = args.ContainsKey("userId")  ? args["userId"].ToString()  : "";
-        string username = args.ContainsKey("user")    ? args["user"].ToString()    : "";
-        string message  = args.ContainsKey("message") ? args["message"].ToString() : "";
-
-        if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(message)) return false;
-
-        // Skip bot messages (optional: add your bot's user ID here)
-        // if (userId == "YOUR_BOT_ID") return false;
-
-        EconomyDb.EnsureUser(userId, username);
-        var stats = EconomyDb.GetStats(userId);
-
-        var rank          = EconomyConfig.GetRank(stats.RankId);
-        var lifetimePeak  = EconomyConfig.GetRank(stats.LifetimePeakRankId);
-
-        var payload = JsonConvert.SerializeObject(new
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        EconomyLogger.Info("CHAT MESSAGE WEBSOCKET PAYLOAD", ">>> ACTION TRIGGERED <<<", traceId);
+        try
+        {    
+            var    args     = CPH.GetArgs();
+            string userId   = args.ContainsKey("userId")  ? args["userId"].ToString()  : "";
+            string username = args.ContainsKey("user")    ? args["user"].ToString()    : "";
+            string message  = args.ContainsKey("message") ? args["message"].ToString() : "";
+    
+            if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(message)) return false;
+    
+            // Skip bot messages (optional: add your bot's user ID here)
+            // if (userId == "YOUR_BOT_ID") return false;
+    
+            EconomyDb.EnsureUser(userId, username);
+            var stats = EconomyDb.GetStats(userId);
+    
+            var rank          = EconomyConfig.GetRank(stats.RankId);
+            var lifetimePeak  = EconomyConfig.GetRank(stats.LifetimePeakRankId);
+    
+            var payload = JsonConvert.SerializeObject(new
+            {
+                @event                = "chat_message",
+                userId,
+                username,
+                message,
+                points                = stats.SeasonalPoints,
+                rankId                = stats.RankId,
+                rankName              = rank.Name,
+                rankIcon              = $"icons/{rank.Name.ToLower()}.svg",
+                rankColor             = rank.Color,
+                lifetimePeakRankId    = stats.LifetimePeakRankId,
+                lifetimePeakRankName  = lifetimePeak.Name,
+                lifetimePeakRankColor = lifetimePeak.Color,   // ← used for "Legacy Aura" glow
+            });
+    
+            CPH.WebsocketBroadcastString(payload);
+            return true;
+        }
+        catch (Exception ex)
         {
-            @event                = "chat_message",
-            userId,
-            username,
-            message,
-            points                = stats.SeasonalPoints,
-            rankId                = stats.RankId,
-            rankName              = rank.Name,
-            rankIcon              = $"icons/{rank.Name.ToLower()}.svg",
-            rankColor             = rank.Color,
-            lifetimePeakRankId    = stats.LifetimePeakRankId,
-            lifetimePeakRankName  = lifetimePeak.Name,
-            lifetimePeakRankColor = lifetimePeak.Color,   // ← used for "Legacy Aura" glow
-        });
-
-        CPH.WebsocketBroadcastString(payload);
-        return true;
+            EconomyLogger.Fatal("CHAT MESSAGE WEBSOCKET PAYLOAD", "Action crashed!", ex, traceId);
+            return false;
+        }
+        finally
+        {
+            EconomyLogger.Trace("CHAT MESSAGE WEBSOCKET PAYLOAD", "Action execution finished.", traceId);
+        }
     }
 }
 #endregion ACTION: Chat Message WebSocket Payload
