@@ -811,7 +811,7 @@ public class CPHInline
                     losersCount = losers.Count,
                     rankChanges = rankChanges
                 };
-                CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload), "Economy");
+                CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload));
 
                 EconomyLogger.Info("ResolveBet",
                     $"Bet#{betId} resolved. Winners={winners.Count} Losers={losers.Count} RankChanges={rankChanges.Count}", tid);
@@ -883,7 +883,7 @@ public class CPHInline
                     cost     = EconomyConfig.ANNUNCIO_COST,
                     newBalance = newPts
                 };
-                CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload), "Economy");
+                CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload));
 
                 EconomyLogger.Info("Annuncio",
                     $"uid={userId} msg='{rawMsg}' cost={EconomyConfig.ANNUNCIO_COST} remaining={newPts}", tid);
@@ -981,7 +981,7 @@ public class CPHInline
                     lifetimePeakRankColor = peakColor
                 };
 
-                CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload), "Economy");
+                CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload));
                 EconomyLogger.Debug("ChatPayload",
                     $"uid={userId} rank={rankName} peakRank={EconomyConfig.RankNames[peakRankId]} pts={pts}", tid);
             }
@@ -1179,7 +1179,7 @@ public class CPHInline
                         oldSeason  = oldSeasonId,
                         newSeason  = $"Season {newSeasonId}"
                     };
-                    CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload), "Economy");
+                    CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload));
 
                     CPH.SendMessage($"🔄 SEASON RESET complete! Season {newSeasonId} has begun. Lifetime stats preserved. GL HF! 🎮");
                 }
