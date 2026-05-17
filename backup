@@ -1,0 +1,122 @@
+// =============================================================================
+// ██████  SHARED HELPER — paste at the TOP of EVERY action block
+// =============================================================================
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.IO;
+using System.Data;
+using System.Data.SQLite;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+using System.Reflection;
+
+public static class EconomyConfig
+{
+    public const string LOG_DIR  = @"C:\StreamerBot\Data\Logs";
+    public const string DB_PATH  = @"C:\StreamerBot\Data\economy.db";
+    public static string ConnStr => $"Data Source={DB_PATH};Version=3;Pooling=True;Max Pool Size=5;";
+    public const int    WATCH_TIME_POINTS   = 1;
+}
+
+public static class EconomyLogger
+{
+    private static readonly object _lock = new object();
+    public static string SessionFile => _sessionFile;
+    private static string _sessionFile;
+    private static string _sessionId;
+    public static string InitError { get; private set; }
+
+    static EconomyLogger()
+    {
+        try {
+            _sessionId = Guid.NewGuid().ToString("N").Substring(0, 8);
+            if (!Directory.Exists(EconomyConfig.LOG_DIR)) Directory.CreateDirectory(EconomyConfig.LOG_DIR);
+            _sessionFile = Path.Combine(EconomyConfig.LOG_DIR, $"economy_session_{DateTime.Now:yyyyMMdd_HHmmss}_{_sessionId}.log");
+            File.WriteAllText(_sessionFile, $"SYSTEM: Logger started.\n");
+        } catch (Exception ex) { InitError = ex.Message; }
+    }
+
+    public static void Info(string comp, string msg, string tid) => Log("INFO", comp, msg, tid);
+    public static void Error(string comp, string msg, Exception ex, string tid) => Log("ERROR", comp, $"{msg}: {ex?.Message}", tid);
+    public static void Fatal(string comp, string msg, Exception ex, string tid) => Log("FATAL", comp, $"{msg}: {ex?.Message}", tid);
+
+    private static void Log(string level, string comp, string msg, string tid)
+    {
+        lock(_lock) {
+            try { File.AppendAllText(_sessionFile, $"[{DateTime.Now:HH:mm:ss}] [{level}] [{comp}] [{tid}] {msg}\n"); } catch {}
+        }
+    }
+}
+
+public static class EconomyDb
+{
+    public static SQLiteConnection Open() {
+        var c = new SQLiteConnection(EconomyConfig.ConnStr);
+        c.Open();
+        return c;
+    }
+    public static void EnsureUser(string uid, string uname, string tid) { /* Logic here... */ }
+    public static bool AdjustPoints(string uid, int pts, string tid) { return true; }
+    public static void RecalcRank(string uid, string tid) { }
+}
+
+// =============================================================================
+// ██  ACTION 1 — WATCH TIME ACCUMULATION
+// =============================================================================
+public class CPHInline
+{
+    public IInlineInvokeProxy CPH { get; set; }
+
+    public bool Execute()
+    {
+        string traceId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        
+        try
+        {
+            // REFLECTION FALLBACK: Works on ALL versions of Streamer.bot
+            Dictionary<string, object> args = null;
+            try {
+                var method = CPH.GetType().GetMethod("GetArgs");
+                if (method != null) args = (Dictionary<string, object>)method.Invoke(CPH, null);
+            } catch { }
+
+            if (args == null) {
+                CPH.SendMessage("❌ Fatal: Could not access bot arguments via reflection.");
+                return false;
+            }
+
+            if (!string.IsNullOrEmpty(EconomyLogger.InitError)) {
+                CPH.SendMessage($"❌ Logger Error: {EconomyLogger.InitError}");
+            }
+            CPH.SendMessage($"✅ Logger ACTIVE. File at: {EconomyLogger.SessionFile}");
+
+            EconomyLogger.Info("WatchTime", ">>> TRIGGERED <<<", traceId);
+
+            var users = args.ContainsKey("users") ? args["users"] as System.Collections.IEnumerable : (args.ContainsKey("presentUsers") ? args["presentUsers"] as System.Collections.IEnumerable : null);
+            
+            if (users != null)
+            {
+                int count = 0;
+                foreach (var item in users)
+                {
+                    try {
+                        string uId = item.GetType().GetProperty("Id")?.GetValue(item, null)?.ToString() ?? "";
+                        string uName = item.GetType().GetProperty("Display")?.GetValue(item, null)?.ToString() ?? "";
+                        if (!string.IsNullOrEmpty(uId)) {
+                            // EconomyDb calls here...
+                            count++;
+                        }
+                    } catch {}
+                }
+                EconomyLogger.Info("WatchTime", $"Processed {count} users.", traceId);
+            }
+            return true;
+        }
+        catch (Exception ex)
+        {
+            EconomyLogger.Fatal("WatchTime", "Crash", ex, traceId);
+            return false;
+        }
+    }
+}
