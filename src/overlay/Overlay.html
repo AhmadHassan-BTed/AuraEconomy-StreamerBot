@@ -275,9 +275,18 @@ function connect() {
         try { raw = JSON.parse(evt.data); }
         catch { return; }
 
-        // Streamer.bot wraps broadcasts in { event: { source, type }, data: {...} }
-        // but also allows direct JSON strings via WebsocketBroadcastString
-        const payload = raw.data ?? raw;
+        let payload;
+        // Checks if data is nested inside Streamer.bot's double-wrapped wrapper
+        if (raw.data && typeof raw.data.data === 'string') {
+            try { 
+                payload = JSON.parse(raw.data.data); 
+            } catch { 
+                payload = raw.data; 
+            }
+        } else {
+            payload = raw.data ?? raw;
+        }
+
         handlePayload(payload);
     });
 
@@ -332,8 +341,13 @@ function renderChat(data) {
     if (isEternal) el.style.setProperty("--eternal-clr", rankColor);
 
     // Rank icon — fall back to a blank transparent 1×1 if file missing
-    const iconSrc = data.rankIcon ?? "/icons/wood.svg";
+    //const iconSrc = data.rankIcon ?? "/icons/wood.svg";
 
+
+    // Strip any leading slashes sent by the bot so it looks cleanly in our local folder
+    let rawIcon = data.rankIcon ?? "icons/wood.svg";
+    const iconSrc = rawIcon.startsWith('/') ? rawIcon.substring(1) : rawIcon;
+    
     el.innerHTML =
         `<img src="${iconSrc}" alt="${escapeHtml(data.rankName ?? '')}" class="rank-icon"` +
         ` onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22/%3E'">`+
