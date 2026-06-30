@@ -9,19 +9,19 @@
 
 ---
 
-## ✨ Key Features
+##  Key Features
 
-*   **📈 Dynamic Ranking**: 10 distinct tiers from "Wood" to the prestigious "Eternal" rank.
-*   **💠 Legacy Aura**: A permanent visual badge of honor. Viewers keep a colored glow based on their *highest-ever* rank, regardless of monthly resets.
-*   **🎲 Integrated Betting**: Advanced escrow-based betting system (Win/Loss) with rank-based wager caps.
-*   **📜 !annuncio System**: Premium point-sink command that broadcasts beautiful, animated messages on-screen.
-*   **🔄 Seasonal Resets**: Monthly resets that clear seasonal points but preserve lifetime stats and "Aura" status.
-*   **🛠️ Robust Accrual**: Verified 1-point-per-minute watch time system using Streamer.bot's native 'Present Viewers' engine for 100% reliability.
-*   **⚡ High Performance**: SQLite database configured with WAL mode to allow simultaneous access by your bot and external tools (like Minecraft plugins).
+*   ** Dynamic Ranking**: 10 distinct tiers from "Wood" to the prestigious "Eternal" rank.
+*   ** Legacy Aura**: A permanent visual badge of honor. Viewers keep a colored glow based on their *highest-ever* rank, regardless of monthly resets.
+*   ** Integrated Betting**: Advanced escrow-based betting system (Win/Loss) with rank-based wager caps.
+*   ** !annuncio System**: Premium point-sink command that broadcasts beautiful, animated messages on-screen.
+*   ** Seasonal Resets**: Monthly resets that clear seasonal points but preserve lifetime stats and "Aura" status.
+*   ** Robust Accrual**: Verified 1-point-per-minute watch time system using Streamer.bot's native 'Present Viewers' engine for 100% reliability.
+*   ** High Performance**: SQLite database configured with WAL mode to allow simultaneous access by your bot and external tools (like Minecraft plugins).
 
 ---
 
-## 📂 Project Structure
+##  Project Structure
 
 ```text
 /
@@ -40,7 +40,7 @@
 
 ---
 
-## 🚀 Quick Start
+##  Quick Start
 
 1.  **Database**: Run `schema.sql` in a SQLite tool to create your database file.
 2.  **Configuration**: Open `EconomySystem.cs` and set your `DB_PATH`.
@@ -51,7 +51,7 @@ For detailed instructions, see the [Implementation Guide](docs/ImplementationGui
 
 ---
 
-## 🛠️ Tech Stack
+##  Tech Stack
 
 *   **Bot**: Streamer.bot (C# Inline)
 *   **Storage**: SQLite (WAL Mode)
@@ -59,7 +59,7 @@ For detailed instructions, see the [Implementation Guide](docs/ImplementationGui
 
 ---
 
-## 💎 Rank Thresholds
+##  Rank Thresholds
 
 | Rank | Points | Bet Cap | Aura Color |
 | :--- | :--- | :--- | :--- |
@@ -71,4 +71,4 @@ For detailed instructions, see the [Implementation Guide](docs/ImplementationGui
 
 ---
 
-Developed with ❤️ by **Ahmad Hassan (B-Ted)** for the streaming community.
+Developed with  by **Ahmad Hassan (B-Ted)** for the streaming community.

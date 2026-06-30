@@ -390,7 +390,7 @@ function renderAnnuncio(data) {
     const safeMsg  = escapeHtml(decodeHtmlEntities(data.message ?? ""));
 
     box.innerHTML =
-        `<div class="annuncio-label">📢 Annuncio</div>` +
+        `<div class="annuncio-label"> Annuncio</div>` +
         `<div class="annuncio-byline">by ${safeUser}</div>` +
         `<div class="annuncio-msg">${safeMsg}</div>`;
 
@@ -406,14 +406,14 @@ function renderAnnuncio(data) {
 //  Bet resolved renderer
 // ═══════════════════════════════════════════════════════════════════════════════
 function renderBetResolved(data) {
-    showToast(`🎲 Bet Resolved! [${escapeHtml(data.winLabel ?? "")}] wins!`, "#4caf50", TOAST_MS);
+    showToast(` Bet Resolved! [${escapeHtml(data.winLabel ?? "")}] wins!`, "#4caf50", TOAST_MS);
 
     const changes = Array.isArray(data.rankChanges) ? data.rankChanges : [];
     changes.forEach((change, i) => {
         if (change.promoted) {
             setTimeout(() => {
                 showToast(
-                    `⬆️ RANK UP: ${escapeHtml(change.username)} → ${escapeHtml(change.newRankName)}!`,
+                    `⬆ RANK UP: ${escapeHtml(change.username)} → ${escapeHtml(change.newRankName)}!`,
                     "#AA44FF",
                     6000
                 );
@@ -421,7 +421,7 @@ function renderBetResolved(data) {
         } else if (change.demoted) {
             setTimeout(() => {
                 showToast(
-                    `⬇️ ${escapeHtml(change.username)} dropped to ${escapeHtml(change.newRankName)}`,
+                    `⬇ ${escapeHtml(change.username)} dropped to ${escapeHtml(change.newRankName)}`,
                     "#ff5722",
                     5000
                 );
@@ -434,7 +434,7 @@ function renderBetResolved(data) {
 //  Season reset renderer
 // ═══════════════════════════════════════════════════════════════════════════════
 function renderSeasonReset(data) {
-    showToast(`🔄 ${escapeHtml(data.newSeason ?? "New Season")} has begun! GL HF! 🎮`, "#ffeb3b", 9000);
+    showToast(` ${escapeHtml(data.newSeason ?? "New Season")} has begun! GL HF! `, "#ffeb3b", 9000);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

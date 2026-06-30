@@ -1,4 +1,4 @@
-# 🔍 AuraEconomy: Setup Verification & Diagnostic Guide (Windows 11)
+#  AuraEconomy: Setup Verification & Diagnostic Guide (Windows 11)
 
 If you are not seeing points being awarded or log files are missing, follow these exact steps to verify your setup and collect the files needed for support.
 

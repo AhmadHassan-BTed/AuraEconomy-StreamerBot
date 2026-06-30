@@ -23,7 +23,7 @@ using Newtonsoft.Json.Linq;
 // ── Configuration ─────────────────────────────────────────────────────────────
 public static class EconomyConfig
 {
-    // ★ Adjust paths here if you move the database or log folder
+    //  Adjust paths here if you move the database or log folder
     public const string DB_PATH  = @"C:\StreamerBot\Data\economy.db";
     public const string LOG_DIR  = @"C:\StreamerBot\Data\Logs";
     public const string ICON_DIR = @"C:\StreamerBot\Data\icons";   // local overlay path
@@ -33,21 +33,21 @@ public static class EconomyConfig
         $"Data Source={DB_PATH};Version=3;Pooling=True;Max Pool Size=5;" +
         "Journal Mode=WAL;Synchronous=Normal;";
 
-    // ★ Economy constants — adjust here centrally
+    //  Economy constants — adjust here centrally
     public const int WATCH_TIME_POINTS = 1;        // pts per minute
     public const int ANNUNCIO_COST     = 150;      // pts deducted by !annuncio
     public const int BET_PAYOUT_MULT   = 2;        // winner multiplier (2.0x)
     public const int ETERNAL_MIN_PTS   = 35000;    // floor to qualify for Eternal
     public const int ETERNAL_TOP_N     = 3;        // top N positions get Eternal
 
-    // ★ Rank thresholds — index 0=Wood … 8=Grandmaster (9=Eternal is dynamic)
+    //  Rank thresholds — index 0=Wood … 8=Grandmaster (9=Eternal is dynamic)
     public static readonly int[] RankThresholds = { 0, 500, 1500, 3500, 7000, 12000, 20000, 35000, 60000 };
     public static readonly string[] RankNames    = { "Wood","Bronze","Silver","Gold","Platinum","Emerald","Diamond","Master","Grandmaster","Eternal" };
 
-    // ★ Max bet per rank (index-aligned with RankNames)
+    //  Max bet per rank (index-aligned with RankNames)
     public static readonly int[] MaxBets = { 25, 50, 100, 200, 400, 800, 1500, 3000, 5000, 10000 };
 
-    // ★ Rank colours for overlay Legacy Aura
+    //  Rank colours for overlay Legacy Aura
     public static readonly string[] RankColors = {
         "#8B6914", // Wood
         "#CD7F32", // Bronze
@@ -410,7 +410,7 @@ public class CPHInline
                     betId = (long)cmd.ExecuteScalar();
 
                 EconomyLogger.Info("OpenBet", $"Bet #{betId} opened: '{title}' ({outA} vs {outB})", tid);
-                CPH.SendMessage($"🎲 Bet OPEN! #{betId}: \"{title}\" — [A] {outA}  |  [B] {outB}  — !bet a/b <amount>");
+                CPH.SendMessage($" Bet OPEN! #{betId}: \"{title}\" — [A] {outA}  |  [B] {outB}  — !bet a/b <amount>");
             }
 
             return true;
@@ -601,7 +601,7 @@ public class CPHInline
                     }
                 }
                 EconomyLogger.Info("LockBet", "Bet locked.", tid);
-                CPH.SendMessage("🔒 Bet is now LOCKED — no more entries!");
+                CPH.SendMessage(" [SECURE]  Bet is now LOCKED — no more entries!");
             }
             return true;
         }
@@ -887,7 +887,7 @@ public class CPHInline
 
                 EconomyLogger.Info("Annuncio",
                     $"uid={userId} msg='{rawMsg}' cost={EconomyConfig.ANNUNCIO_COST} remaining={newPts}", tid);
-                CPH.SendMessage($"@{username} 📢 Annuncio sent! (-{EconomyConfig.ANNUNCIO_COST} pts, balance: {newPts})");
+                CPH.SendMessage($"@{username}  Annuncio sent! (-{EconomyConfig.ANNUNCIO_COST} pts, balance: {newPts})");
             }
 
             return true;
@@ -1181,7 +1181,7 @@ public class CPHInline
                     };
                     CPH.WebsocketBroadcastString(JsonConvert.SerializeObject(payload));
 
-                    CPH.SendMessage($"🔄 SEASON RESET complete! Season {newSeasonId} has begun. Lifetime stats preserved. GL HF! 🎮");
+                    CPH.SendMessage($" SEASON RESET complete! Season {newSeasonId} has begun. Lifetime stats preserved. GL HF! ");
                 }
             }
 
@@ -1227,7 +1227,7 @@ public class CPHInline
                 int maxBet = EconomyConfig.MaxBets[rankId];
 
                 CPH.SendMessage(
-                    $"@{username} 💰 {pts} pts | Rank: {EconomyConfig.RankNames[rankId]} | Max Bet: {maxBet} pts");
+                    $"@{username}  {pts} pts | Rank: {EconomyConfig.RankNames[rankId]} | Max Bet: {maxBet} pts");
                 EconomyLogger.Info("Balance", $"uid={userId} pts={pts} rank={EconomyConfig.RankNames[rankId]}", tid);
             }
 
